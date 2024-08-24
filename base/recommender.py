@@ -23,11 +23,13 @@ class Recommender(object):
         self.recOutput = []
 
     def initializing_log(self):
+        """日志输出模型配置信息"""
         self.model_log.add('### model configuration ###')
         for k in self.config.config:
             self.model_log.add(k + '=' + self.config[k])
 
     def print_model_info(self):
+        """CLI 输出模型配置信息"""
         print('Model:', self.config['model.name'])
         print('Training Set:', abspath(self.config['training.set']))
         print('Test Set:', abspath(self.config['test.set']))

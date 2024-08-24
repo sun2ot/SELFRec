@@ -2,12 +2,13 @@ from SELFRec import SELFRec
 from util.conf import ModelConf
 
 if __name__ == '__main__':
-    # Register your model here
+    #* Register your model here
     graph_baselines = ['LightGCN','DirectAU','MF']
     ssl_graph_models = ['SGL', 'SimGCL', 'SEPT', 'MHCN', 'BUIR', 'SelfCF', 'SSL4Rec', 'XSimGCL', 'NCL','MixGCF']
     sequential_baselines= ['SASRec']
     ssl_sequential_models = ['CL4SRec','DuoRec','BERT4Rec']
 
+    # 输出 CLI 交互菜单
     print('=' * 80)
     print('   SELFRec: A library for self-supervised recommendation.   ')
     print('=' * 80)

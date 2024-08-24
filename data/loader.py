@@ -1,14 +1,23 @@
 import os.path
 from os import remove
 from re import split
-
+from typing import Literal
 
 class FileIO(object):
     def __init__(self):
         pass
 
     @staticmethod
-    def write_file(dir, file, content, op='w'):
+    def write_file(dir: str, file, content, op='w'):
+        """
+        将内容写入指定路径和文件名的文件中
+
+        Args:
+            dir: 文件路径
+            file: 文件名
+            content: 写入的内容
+            op: 写入方式，默认为`w`，即覆盖
+        """
         if not os.path.exists(dir):
             os.makedirs(dir)
         with open(dir + file, op) as f:
@@ -20,18 +29,30 @@ class FileIO(object):
             remove(file_path)
 
     @staticmethod
-    def load_data_set(file, rec_type):
+    def load_data_set(file: str, rec_type: Literal['graph', 'sequential']):
+        """
+        根据模型类型加载数据集
+
+        Args:
+            file: 数据集路径
+            rec_type: `graph` or `sequential`
+        
+        Returns:
+            data: List[user_id, item_id, float(weight)]
+        """
         if rec_type == 'graph':
             data = []
             with open(file) as f:
                 for line in f:
+                    # user_id, item_id, weight
+                    #? weight 是啥？
                     items = split(' ', line.strip())
                     user_id = items[0]
                     item_id = items[1]
                     weight = items[2]
                     data.append([user_id, item_id, float(weight)])
 
-        if rec_type == 'sequential':
+        elif rec_type == 'sequential':
             data = {}
             with open(file) as f:
                 for line in f:
