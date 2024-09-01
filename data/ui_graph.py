@@ -6,21 +6,26 @@ import scipy.sparse as sp
 import pickle
 
 class Interaction(Data,Graph):
+    """ui交互图封装"""
     def __init__(self, conf, training, test):
         Graph.__init__(self)
         Data.__init__(self,conf,training,test)
 
-        self.user = {}
-        self.item = {}
+        self.user = {}  # 用户id -> 编码
+        self.item = {}  # 物品id -> 编码
+        # id映射
         self.id2user = {}
         self.id2item = {}
+        # 数据集(双向嵌套字典)
         self.training_set_u = defaultdict(dict)
         self.training_set_i = defaultdict(dict)
         self.test_set = defaultdict(dict)
         self.test_set_item = set()
         self.__generate_set()
+        # 用户和项目的数量
         self.user_num = len(self.training_set_u)
         self.item_num = len(self.training_set_i)
+        # 交互邻接矩阵
         self.ui_adj = self.__create_sparse_bipartite_adjacency()
         self.norm_adj = self.normalize_graph_mat(self.ui_adj)
         self.interaction_mat = self.__create_sparse_interaction_matrix()
@@ -33,21 +38,33 @@ class Interaction(Data,Graph):
 
 
     def __generate_set(self):
+        """
+        生成用户、物品和评分的集合
+        """
+        # 遍历训练数据，为每个用户和物品分配ID，并构建用户-物品评分矩阵
         for entry in self.training_data:
             user, item, rating = entry
+            # 如果用户不在字典中，为其分配一个新的ID
             if user not in self.user:
-                self.user[user] = len(self.user)
+                self.user[user] = len(self.user)  # 直接以长度编码(0,1,2,3,...)
                 self.id2user[self.user[user]] = user
+            # 物品编码同上
             if item not in self.item:
                 self.item[item] = len(self.item)
                 self.id2item[self.item[item]] = item
-                # userList.append
+            # 生成评分记录(嵌套dict)
+            #! 根据库中的yelp数据集，评分全部为1，这是否会有影响？
             self.training_set_u[user][item] = rating
             self.training_set_i[item][user] = rating
+            
+        # 遍历测试数据，只为训练数据中已有的用户和物品添加评分记录至测试集
+        #* 只处理训练集中存在的数据，这一点很重要
         for entry in self.test_data:
             user, item, rating = entry
+            # 忽略测试数据中未在训练数据出现的用户或物品
             if user not in self.user or item not in self.item:
                 continue
+            # 将评分记录添加到测试集的用户-物品评分矩阵中，并记录测试集中的所有物品
             self.test_set[user][item] = rating
             self.test_set_item.add(item)
 
@@ -124,6 +141,15 @@ class Interaction(Data,Graph):
             return False
 
     def user_rated(self, u):
+        """
+        获取用户u的评分信息
+
+        Args:
+            u: 用户ID，表示我们想要查询评分信息的用户
+
+        Returns:
+            (list1, list2) (tuple): (用户u评价过的所有物品的ID, 对应物品的评分)
+        """
         return list(self.training_set_u[u].keys()), list(self.training_set_u[u].values())
 
     def item_rated(self, i):

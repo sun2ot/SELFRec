@@ -37,8 +37,8 @@ class FileIO(object):
             file: 数据集路径
             rec_type: `graph` or `sequential`
         
-        Returns:
-            data: List[user_id, item_id, float(weight)]
+        Returns(this comment only for graph here):
+            data: List[[user_id, item_id, float(weight)], [...]]
         """
         if rec_type == 'graph':
             data = []

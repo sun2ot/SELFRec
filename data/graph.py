@@ -12,10 +12,10 @@ class Graph(object):
         对给定的邻接矩阵进行规范化
         
         Args:
-            adj_mat: sp.coo_matrix, 图的邻接矩阵
+            adj_mat (scipy.sparse.coo_matrix): 图的邻接矩阵
         
         Returns:
-            norm_adj_mat: sp.coo_matrix, 规范化后的邻接矩阵
+            norm_adj_mat (scipy.sparse.coo_matrix): 规范化后的邻接矩阵
         """
         # 获取邻接矩阵的形状，用于后续判断矩阵是否为方阵
         shape = adj_mat.get_shape()

@@ -4,9 +4,25 @@ import torch.nn as nn
 
 
 def bpr_loss(user_emb, pos_item_emb, neg_item_emb):
+    """
+    计算Bayesian Personalized Ranking (BPR) 损失函数
+    
+    Args:
+        user_emb: 用户嵌入向量，形状为[batch_size, embedding_dim]
+        pos_item_emb: 正样本物品嵌入向量，形状为[batch_size, embedding_dim]
+        neg_item_emb: 负样本物品嵌入向量，形状为[batch_size, embedding_dim]
+    
+    Returns:
+        BPR损失的平均值，标量张量
+    """
+    # 计算用户对正样本的偏好分数
+    # torch.mul is element-wise multiplies
     pos_score = torch.mul(user_emb, pos_item_emb).sum(dim=1)
+    # 计算用户对负样本的偏好分数
     neg_score = torch.mul(user_emb, neg_item_emb).sum(dim=1)
+    # 计算BPR损失，鼓励正样本分数高于负样本分数
     loss = -torch.log(10e-6 + torch.sigmoid(pos_score - neg_score))
+    # 返回损失的均值
     return torch.mean(loss)
 
 def triplet_loss(user_emb, pos_item_emb, neg_item_emb):
@@ -16,8 +32,24 @@ def triplet_loss(user_emb, pos_item_emb, neg_item_emb):
     return torch.mean(loss)
 
 def l2_reg_loss(reg, *args):
+    """
+    计算L2正则化损失
+
+    Args:
+        reg (float): 正则化系数
+        *args (torch.Tensor): 需要进行正则化的张量列表
+    
+    Returns:
+        正则化损失的平均值，标量张量
+    """
+    # 初始化嵌入损失为0
     emb_loss = 0
+    # 遍历传入的每一个嵌入向量
     for emb in args:
+        # 计算每一个嵌入向量的L2范数，然后除以batch_size以减少其对损失函数的影响
+        # 累加到总的嵌入损失中
+        #! torch.norm is deprecated
+        #todo Use torch.linalg.vector_norm() or torch.linalg.matrix_norm()
         emb_loss += torch.norm(emb, p=2)/emb.shape[0]
     return emb_loss * reg
 
@@ -34,18 +66,23 @@ def batch_softmax_loss(user_emb, item_emb, temperature):
 
 def InfoNCE(view1, view2, temperature: float, b_cos: bool = True):
     """
-    Args:
-        view1: (torch.Tensor - N x D)
-        view2: (torch.Tensor - N x D)
-        temperature: float
-        b_cos (bool)
+    计算InfoNCE损失函数
 
-    Return: Average InfoNCE Loss
+    Args:
+        view1 (torch.Tensor): Num x Dim
+        view2 (torch.Tensor): Num x Dim
+        temperature (float): 温度系数
+        b_cos (bool): 是否使用余弦相似度
+
+    Returns:
+        Average InfoNCE Loss
     """
+    # 如果使用余弦相似度，则先进行归一化
     if b_cos:
         view1, view2 = F.normalize(view1, dim=1), F.normalize(view2, dim=1)
-
+    # 计算正样本的分数，使用点积并除以温度参数
     pos_score = (view1 @ view2.T) / temperature
+    # 计算每个样本的分数
     score = torch.diag(F.log_softmax(pos_score, dim=1))
     return -score.mean()
 

@@ -2,29 +2,52 @@ from random import shuffle,randint,choice,sample
 import numpy as np
 
 
-def next_batch_pairwise(data,batch_size,n_negs=1):
+def next_batch_pairwise(data, batch_size, n_negs=1):
+    """
+    生成用于训练的批量样本对
+
+    Args:
+        data: 数据对象，包含训练数据和用户、物品的映射信息
+        batch_size: 批量大小，决定每次迭代返回的样本数量
+        n_negs: 每个用户正样本的负样本数量
+
+    Returns:
+        yield: 每次yield出包含用户索引、正样本索引和负样本索引的批量数据
+    """
+    # 获取并洗牌训练数据
+    # training_data -> [uid, iid, weight], [...], ...
     training_data = data.training_data
     shuffle(training_data)
+    # 追踪当前处理到的数据位置
     ptr = 0
     data_size = len(training_data)
     while ptr < data_size:
+        # 计算本批次的结束位置
         if ptr + batch_size < data_size:
             batch_end = ptr + batch_size
         else:
             batch_end = data_size
-        users = [training_data[idx][0] for idx in range(ptr, batch_end)]
-        items = [training_data[idx][1] for idx in range(ptr, batch_end)]
+        # 收集本批次的用户和物品(id)
+        batch_users = [training_data[idx][0] for idx in range(ptr, batch_end)]
+        batch_items = [training_data[idx][1] for idx in range(ptr, batch_end)]
         ptr = batch_end
+        # 初始化用户、正样本和负样本索引列表
         u_idx, i_idx, j_idx = [], [], []
+        # 从物品字典(id->编码)获取物品id列表，用于负样本采样
         item_list = list(data.item.keys())
-        for i, user in enumerate(users):
-            i_idx.append(data.item[items[i]])
-            u_idx.append(data.user[user])
-            for m in range(n_negs):
+        # 为每个用户生成样本对
+        for i, user_id in enumerate(batch_users):
+            # 添加用户与正样本的索引对(编码)
+            i_idx.append(data.item[batch_items[i]])
+            u_idx.append(data.user[user_id])
+            # 生成指定数量的负样本索引，并添加到j_idx
+            for _ in range(n_negs):
                 neg_item = choice(item_list)
-                while neg_item in data.training_set_u[user]:
+                # 确保负样本不是用户的历史正样本
+                while neg_item in data.training_set_u[user_id]:
                     neg_item = choice(item_list)
                 j_idx.append(data.item[neg_item])
+        # 返回本批次的用户、正样本和负样本索引
         yield u_idx, i_idx, j_idx
 
 

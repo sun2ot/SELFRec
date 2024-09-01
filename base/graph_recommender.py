@@ -66,13 +66,15 @@ class GraphRecommender(Recommender):
         user_count = len(self.data.test_set)
         for i, user in enumerate(self.data.test_set):
             # 生成用户推荐候选
-            candidates = self.predict(user)
+            candidates = self.predict(user)  # (38048,)
             # predictedItems = denormalize(predictedItems, self.data.rScale[-1], self.data.rScale[0])
             #? 这是否意味着评分其实不影响预测结果
             rated_list, li = self.data.user_rated(user)
             # 根据用户历史评分，排除已评分项目(赋极小值)
             #? 所以测试集里为什么会存在已评分项目
+            #* ans: ui_graph.__generate_set() 中已过滤
             for item in rated_list:
+                #* 以item_id为索引获取对应评分并修改
                 candidates[self.data.item[item]] = -10e8
             # 找到评分最高的max_N个物品
             ids, scores = find_k_largest(self.max_N, candidates)
@@ -88,14 +90,15 @@ class GraphRecommender(Recommender):
         return rec_list
 
     def evaluate(self, rec_list):
+        #* 仅在所有训练epoch结束后执行一次
         """
-        评估推荐结果并输出
+        输出推荐指标及结果
 
         Args:
             rec_list (dict): 推荐列表 `{user: [(item1, score1), (item2, score2), ...]}`
         """
         self.recOutput.append('userId: recommendations in (itemId, ranking score) pairs, * means the item is hit.\n')
-        # 输出样例
+        # 结果输出样例
         # 0: (771,3.333857297897339) (649,3.1552059650421143) (...)
         for user in self.data.test_set:
             line = user + ':'

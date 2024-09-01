@@ -143,13 +143,27 @@ def denormalize(vec, max_val, min_val):
 
 @jit(nopython=True)
 def find_k_largest(K, candidates):
+    """
+    从候选集中找到前K个最大值
+
+    Args:
+        K (int): top K
+        candidates (list): 评分候选列表
+    
+    Returns:
+        (ids, k_largest_scores) (list, list): 最大值索引列表, 最大值列表
+    """
     n_candidates = []
+    # 遍历前K个候选对象并初始化堆
     for iid, score in enumerate(candidates[:K]):
         n_candidates.append((score, iid))
+    # 将列表转换为堆，以便高效检索最小的元素
     heapq.heapify(n_candidates)
+    # 迭代剩余的候选元素，如果找到更大的元素，则替换堆中最小的元素
     for iid, score in enumerate(candidates[K:]):
         if score > n_candidates[0][0]:
             heapq.heapreplace(n_candidates, (score, iid + K))
+    # 降序
     n_candidates.sort(key=lambda d: d[0], reverse=True)
     ids = [item[1] for item in n_candidates]
     k_largest_scores = [item[0] for item in n_candidates]
