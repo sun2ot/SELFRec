@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-
 class TorchGraphInterface(object):
     def __init__(self):
         pass
@@ -18,12 +17,7 @@ class TorchGraphInterface(object):
         """
         # 将X转换为COO格式稀疏矩阵
         coo = X.tocoo()
-        # 创建一个包含稀疏矩阵非零元素索引的张量
-        # indices = torch.LongTensor([coo.row, coo.col])
-        indices = torch.LongTensor(np.vstack((coo.row, coo.col)))
-        # 创建一个包含稀疏矩阵非零元素值的浮点张量
-        values = torch.from_numpy(coo.data).float()
-        # 创建并返回一个PyTorch稀疏张量
-        #! torch.sparse.FloatTensor已弃用
-        # return torch.sparse.FloatTensor(indices, values, coo.shape)
-        return torch.sparse_coo_tensor(indices, values, coo.shape)
+        coords = np.array([coo.row, coo.col])
+        i = torch.LongTensor(coords)
+        v = torch.from_numpy(coo.data).float()
+        return torch.sparse.FloatTensor(i, v, coo.shape)
