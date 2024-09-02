@@ -25,9 +25,10 @@ class Interaction(Data,Graph):
         # 用户和项目的数量
         self.user_num = len(self.training_set_u)
         self.item_num = len(self.training_set_i)
-        # 交互邻接矩阵
+        # 交互二分图邻接矩阵
         self.ui_adj = self.__create_sparse_bipartite_adjacency()
         self.norm_adj = self.normalize_graph_mat(self.ui_adj)
+        # 交互邻接矩阵
         self.interaction_mat = self.__create_sparse_interaction_matrix()
         # popularity_user = {}
         # for u in self.user:
@@ -69,17 +70,33 @@ class Interaction(Data,Graph):
             self.test_set_item.add(item)
 
     def __create_sparse_bipartite_adjacency(self, self_connection=False):
-        '''
-        return a sparse adjacency matrix with the shape (user number + item number, user number + item number)
-        '''
-        n_nodes = self.user_num + self.item_num
-        row_idx = [self.user[pair[0]] for pair in self.training_data]
-        col_idx = [self.item[pair[1]] for pair in self.training_data]
-        user_np = np.array(row_idx)
-        item_np = np.array(col_idx)
-        ratings = np.ones_like(user_np, dtype=np.float32)
-        tmp_adj = sp.csr_matrix((ratings, (user_np, item_np + self.user_num)), shape=(n_nodes, n_nodes),dtype=np.float32)
+        """
+        创建并返回一个稀疏的二分图邻接矩阵
+        
+        Args:
+            self_connection (bool): 如果为True，则邻接矩阵的对角线添加自连接
+        
+        Returns:
+            scipy.sparse.csr_matrix: 稀疏的邻接矩阵，形状为(user number + item number, user number + item number)
+        """
+        # 计算图中节点的总数，包括用户和项目
+        n_nodes = self.user_num + self.item_num  # 69716
+        # 获取训练数据中用户/项目的id(也即索引)分别作为行/列索引
+        # self.training_data -> List[[user, item, float(weight)], [...]]
+        row_idx = [self.user[pair[0]] for pair in self.training_data]  # len = 1237259 -> (self.training_data.size)
+        col_idx = [self.item[pair[1]] for pair in self.training_data]  # len = 1237259
+        # 将用户和项目的索引转换为NumPy数组
+        user_np = np.array(row_idx)  # (1237259,)
+        item_np = np.array(col_idx)  # (1237259,)
+        # 创建一个与用户索引数组相同形状的数组，填充值为1，用于后续创建加权矩阵
+        ratings = np.ones_like(user_np, dtype=np.float32)  # (1237259,)
+        # 创建一个稀疏的CSR格式邻接矩阵，考虑到用户和项目之间的边
+        #* (ratings, (user_np, item_np + self.user_num)) 分别作为非零元素值和对应位置
+        #* item_np + self.user_num 表示将物品 ID 偏移了 self.user_num，使得物品 ID 与用户 ID 不会重叠
+        tmp_adj = sp.csr_matrix((ratings, (user_np, item_np + self.user_num)), shape=(n_nodes, n_nodes), dtype=np.float32)
+        # 通过添加其转置矩阵来创建对称的邻接矩阵
         adj_mat = tmp_adj + tmp_adj.T
+        # 如果self_connection参数为True，则在邻接矩阵的对角线上添加自连接
         if self_connection:
             adj_mat += sp.eye(n_nodes)
         return adj_mat
@@ -95,14 +112,18 @@ class Interaction(Data,Graph):
 
     def __create_sparse_interaction_matrix(self):
         """
-        return a sparse adjacency matrix with the shape (user number, item number)
+        创建一个稀疏的user-item交互矩阵
+
+        Returns:
+            一个稀疏的邻接矩阵，形状为(user number, item number)
         """
         row, col, entries = [], [], []
+        # self.training_data -> List[[user, item, float(weight)], [...]]
         for pair in self.training_data:
-            row += [self.user[pair[0]]]
-            col += [self.item[pair[1]]]
-            entries += [1.0]
-        interaction_mat = sp.csr_matrix((entries, (row, col)), shape=(self.user_num,self.item_num),dtype=np.float32)
+            row.append(self.user[pair[0]])
+            col.append(self.item[pair[1]])
+            entries.append(1.0)
+        interaction_mat = sp.csr_matrix((entries, (row, col)), shape=(self.user_num, self.item_num), dtype=np.float32)
         return interaction_mat
 
     def get_user_id(self, u):
