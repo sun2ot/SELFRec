@@ -6,7 +6,7 @@
 
 ### 关于predict
 
-数据集划分训练、测试，这没什么好说的。但是，训练集训练后，可以得到里面的user, item嵌入；可对于测试集，你只能查到对应用户的embedding，而没有item embedding，因为item并没有投入训练，自然也就不知道对应的嵌入了。
+数据集划分训练、测试，这没什么好说的。但是，训练集训练后，可以得到里面的user, item嵌入；可对于测试集，你只能查到训练集中存在的用户embedding 和 item embedding。对于训练集中不存在的 user/item，因为并没有投入训练，自然也就不知道对应的嵌入了。
 
 这就是为什么，predict中是 `score = torch.matmul(self.user_emb[user_id], self.item_emb.transpose(0, 1))`。
 

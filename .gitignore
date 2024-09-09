@@ -2,4 +2,5 @@ __pycache__
 results/
 log/
 
-mk_dataset/
+mk_dataset/yelp_*/
+*.safetensors
