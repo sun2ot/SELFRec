@@ -49,6 +49,7 @@ class Interaction(Data, Graph):
                 self.id2item[item_id] = item
             # 生成评分记录(嵌套dict)
             #! 根据库中的yelp数据集，评分全部为1，这是否会有影响？
+            # ans: 无影响，因为压根没有用上评分
             self.training_set_u[user][item] = rating
             self.training_set_i[item][user] = rating
             
@@ -128,6 +129,12 @@ class Interaction(Data, Graph):
         return self.item.get(i)
 
     def training_size(self):
+        """
+        获取训练集大小
+        
+        Returns:
+            (user number, item number, training data size)
+        """
         return len(self.user), len(self.item), len(self.training_data)
 
     def test_size(self):
