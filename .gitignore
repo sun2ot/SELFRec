@@ -1,6 +1,7 @@
 __pycache__
 results/
 log/
+model/clip-vit-base-patch32
 
 mk_dataset/yelp_*/
 *.safetensors
