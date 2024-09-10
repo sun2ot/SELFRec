@@ -20,3 +20,8 @@ class Log(object):
     def add(self,text):
         """输出日志内容"""
         self.logger.info(text)
+    
+    @staticmethod
+    def catch(exception: Exception, subject: str, position: str = ''):
+        """CLI输出自定义异常捕获日志"""
+        print(f'\n{"-"*50}\n{position} {subject} error:\n{exception}\n{"-"*50}')
