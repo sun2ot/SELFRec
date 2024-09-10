@@ -12,10 +12,10 @@ def next_batch_pairwise(data, batch_size, n_negs=1):
         n_negs: 每个用户正样本的负样本数量
 
     Returns:
-        yield: 每次yield出包含用户索引、正样本索引和负样本索引的批量数据
+        yield: 每次yield出包含用户id、正样本id和负样本id列表
     """
     # 获取并洗牌训练数据
-    # training_data -> [uid, iid, weight], [...], ...
+    # SELFRec.py -> training_data -> [user, item, weight], [...], ...
     training_data = data.training_data
     shuffle(training_data)
     # 追踪当前处理到的数据位置
@@ -27,28 +27,28 @@ def next_batch_pairwise(data, batch_size, n_negs=1):
             batch_end = ptr + batch_size
         else:
             batch_end = data_size
-        # 收集本批次的用户和物品(id)
+        # 收集本批次的用户和物品
         batch_users = [training_data[idx][0] for idx in range(ptr, batch_end)]
         batch_items = [training_data[idx][1] for idx in range(ptr, batch_end)]
         ptr = batch_end
-        # 初始化用户、正样本和负样本索引列表
-        u_idx, i_idx, j_idx = [], [], []
-        # 从物品字典(id->编码)获取物品id列表，用于负样本采样
+        # 初始化用户、正样本和负样本id列表
+        u_ids, i_ids, j_ids = [], [], []
+        # 从物品字典(物品->物品id)获取物品列表，用于负样本采样
         item_list = list(data.item.keys())
         # 为每个用户生成样本对
-        for i, user_id in enumerate(batch_users):
-            # 添加用户与正样本的索引对(编码)
-            i_idx.append(data.item[batch_items[i]])
-            u_idx.append(data.user[user_id])
-            # 生成指定数量的负样本索引，并添加到j_idx
+        for i, user in enumerate(batch_users):
+            # 添加用户与正样本的索引对(id)
+            i_ids.append(data.item[batch_items[i]])
+            u_ids.append(data.user[user])
+            # 生成指定数量的负样本索引，并添加到j_ids
             for _ in range(n_negs):
                 neg_item = choice(item_list)
                 # 确保负样本不是用户的历史正样本
-                while neg_item in data.training_set_u[user_id]:
+                while neg_item in data.training_set_u[user]:
                     neg_item = choice(item_list)
-                j_idx.append(data.item[neg_item])
-        # 返回本批次的用户、正样本和负样本索引
-        yield u_idx, i_idx, j_idx
+                j_ids.append(data.item[neg_item])
+        # 返回本批次的用户、正样本和负样本id
+        yield u_ids, i_ids, j_ids
 
 
 def next_batch_pointwise(data,batch_size):
