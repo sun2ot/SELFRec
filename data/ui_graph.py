@@ -3,6 +3,11 @@ from collections import defaultdict
 from data.data import Data
 from data.graph import Graph
 import scipy.sparse as sp
+import torch
+import torch.nn as nn
+import tqdm
+from safetensors import safe_open
+from util.logger import Log
 
 
 class Interaction(Data, Graph):
@@ -10,8 +15,8 @@ class Interaction(Data, Graph):
         Graph.__init__(self)
         Data.__init__(self, conf, training, test)
 
-        self.user = {}  # 用户id -> 编码
-        self.item = {}  # 物品id -> 编码
+        self.user = {}  # 用户 -> 用户id
+        self.item = {}  # 物品 -> 物品id
         # id映射
         self.id2user = {}
         self.id2item = {}
@@ -31,6 +36,12 @@ class Interaction(Data, Graph):
         # 交互邻接矩阵
         self.interaction_mat = self.__create_sparse_interaction_matrix()
 
+        # 图片预处理数据
+        self.image_emb_path = self.config['image.set']
+        self.item2image_path = self.config['item2image.path']
+        self.emb_size = int(self.config['embedding.size'])
+        self.image_embs = self.__create_image_projection_embedding(self.item2image_path, self.image_emb_path, self.emb_size)
+
     def __generate_set(self):
         """
         生成用户、物品和评分的集合
@@ -40,7 +51,7 @@ class Interaction(Data, Graph):
             # 如果用户不在字典中，为其分配一个新的ID
             if user not in self.user:
                 user_id = len(self.user)
-                self.user[user] = user_id  # 直接以长度编码(0,1,2,3,...)
+                self.user[user] = user_id  #* 直接以长度(索引)编码(0,1,2,3,...)
                 self.id2user[user_id] = user
             # 物品编码同上
             if item not in self.item:
@@ -121,6 +132,40 @@ class Interaction(Data, Graph):
         
         interaction_mat = sp.csr_matrix((entries, (row, col)), shape=(self.user_num, self.item_num), dtype=np.float32)
         return interaction_mat
+
+
+    def __create_image_projection_embedding(self, item2image_path: str, image_emb_path: str, emb_size: int):
+        """
+        读取图像预处理数据并从CLIP模型输出的512维投影到embedding_size
+
+        Args:
+            item2image_path (str): item -> image1, image2, ...
+            image_emb_path (str): 预处理图像数据路径
+            emb_size (int): 嵌入向量维度
+        
+        Returns:
+            image_embs (dict): item -> mean image embedding
+        """
+        image_embs = {}  # item -> mean image embedding
+
+        # 定义一个线性层将512维图像特征映射到emb_size
+        linear_projection = nn.Linear(512, emb_size).to('cuda:1')
+        image_safetensors = safe_open(image_emb_path, 'pt', device='cuda:1')
+        with open(item2image_path, 'r') as map_file:
+            print(f'Start reading image embedding safetensors file and project to {emb_size}')
+            for line in tqdm.tqdm(map_file):
+                item = line.strip().split(' ')[0]
+                images = line.strip().split(' ')[1:]
+                try:
+                    image_embs[item] = linear_projection(
+                        torch.mean(
+                        torch.stack([image_safetensors.get_tensor(image) for image in images]), dim=0)
+                        )
+                except Exception as e:
+                    Log.catch(e, item, 'item2photo emb project')
+                    # print(f'\n{"-"*50}\n{item} error:\n{e}\n{"-"*50}')
+                    exit(-1)
+        return image_embs
 
     def get_user_id(self, u):
         return self.user.get(u)

@@ -5,6 +5,8 @@ from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
 from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE
+from util.logger import Log
+import tqdm
 
 # Paper: XSimGCL - Towards Extremely Simple Graph Contrastive Learning for Recommendation
 
@@ -18,26 +20,25 @@ class XSimGCL(GraphRecommender):
         self.temp = float(config['tau'])
         self.n_layers = int(config['n_layer'])
         self.layer_cl = int(config['l_star'])
-        self.model = XSimGCL_Encoder(self.data, self.emb_size, self.eps, self.n_layers,self.layer_cl)
+        self.model = XSimGCL_Encoder(self.data, self.emb_size, self.eps, self.n_layers, self.layer_cl)
 
     def train(self):
-        model = self.model.cuda()
+        model = self.model.cuda(1)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lRate)
         for epoch in range(self.maxEpoch):
             # 遍历每个批次的数据
             for n, batch_data in enumerate(next_batch_pairwise(self.data, self.batch_size)):
-                # 从批次数据中获取用户索引、正样本索引和负样本索引
-                user_idx, pos_idx, neg_idx = batch_data
+                user_ids, pos_ids, neg_ids = batch_data
                 # 获取推荐子图嵌入和对比学习子图嵌入
                 #? 这个True参数哪来的, 推测为perturbed=True, 否则不会有四个返回值
-                rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb  = model(True)
+                rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb  = model(perturbed=True)
                 # 根据批次数据获取用户的嵌入、正样本嵌入和负样本嵌入
-                # 这里是根据位置索引获取的，不是 user/item id
-                user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
+                #* 这里看似字典形式获取，实则为索引，可参考下文predict()
+                user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_ids], rec_item_emb[pos_ids], rec_item_emb[neg_ids]
                 # 计算推荐损失
                 rec_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb)
                 # 计算对比学习损失
-                cl_loss = self.cl_rate * self.cal_cl_loss([user_idx, pos_idx], rec_user_emb, cl_user_emb, rec_item_emb, cl_item_emb)
+                cl_loss = self.cl_rate * self.cal_cl_loss([user_ids, pos_ids], rec_user_emb, cl_user_emb, rec_item_emb, cl_item_emb)
                 # 计算批次总损失
                 batch_loss = rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss
                 # 梯度清零
@@ -72,8 +73,8 @@ class XSimGCL(GraphRecommender):
             user_cl_loss + item_cl_loss
         """
         # 确定唯一user/item索引
-        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda()
-        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda()
+        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda(1)
+        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda(1)
         # 使用InfoNCE损失函数计算user/item的对比损失
         user_cl_loss = InfoNCE(user_view1[u_idx], user_view2[u_idx], self.temp)
         item_cl_loss = InfoNCE(item_view1[i_idx], item_view2[i_idx], self.temp)
@@ -98,7 +99,7 @@ class XSimGCL(GraphRecommender):
         user_id = self.data.get_user_id(u)
         # 计算用户u对所有物品的预测评分: 用户嵌入和物品嵌入转置的乘积
         # self.user_emb -> torch.Size([31668, 64]), self.item_emb -> torch.Size([38048, 64])
-        #* user_emb就是一个tensor，但是由于dataset处理的原因，user跟user_id都是顺次排下来的数字
+        #* user_emb就是一个tensor，但是由于dataset处理的原因，user_id就是顺次排下来的数字(索引)
         #* 因此可以将user_id作为索引使用，以形似dict的方式获取对应user的emd
         score = torch.matmul(self.user_emb[user_id], self.item_emb.transpose(0, 1))  # torch.Size([38048])
         # 将评分从GPU内存转回CPU内存，并转换为NumPy数组形式，以便后续处理或输出
@@ -118,10 +119,10 @@ class XSimGCL_Encoder(nn.Module):
         self.n_layers = n_layers
         self.layer_cl = layer_cl
         self.norm_adj = data.norm_adj
-        self.embedding_dict = self._init_model()
-        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda()
+        self.embedding_dict = self._init_model(fusion=True)
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda(1)
 
-    def _init_model(self):
+    def _init_model(self, fusion=False):
         """
         使用Xavier初始化模型的嵌入参数
 
@@ -133,9 +134,24 @@ class XSimGCL_Encoder(nn.Module):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
             # 创建用户&项目的嵌入矩阵(size = 数量 x 嵌入尺寸)
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device='cuda:1'))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device='cuda:1'))),
         })
+
+        if fusion:
+            #todo 先尝试从这里加入图片模态特征
+            #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
+            item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device='cuda:1')
+            alpha = 0.5  # item 模态融合权重
+            try:
+                # print('开始模态融合')
+                for idx, tensor in enumerate(embedding_dict['item_emb']):
+                    # id -> init embedding
+                    item_emb_list[idx] = alpha * tensor + (1-alpha) * self.data.image_embs[self.data.id2item[idx]]
+                embedding_dict['item_emb'] = item_emb_list
+            except Exception as e:
+                Log.catch(e, idx, '模态融合')
+                exit(-1)
         return embedding_dict
 
     def forward(self, perturbed=False):
@@ -165,7 +181,7 @@ class XSimGCL_Encoder(nn.Module):
                 # 为嵌入向量添加扰动
                 # Returns a tensor with the same size as input 
                 # that is filled with random numbers from a uniform distribution on the interval [0, 1)
-                random_noise = torch.rand_like(ego_embeddings).cuda()
+                random_noise = torch.rand_like(ego_embeddings).cuda(1)
                 # torch.sign returns a new tensor with the signs(1|-1|0) of the elements of input.
                 ego_embeddings += torch.sign(ego_embeddings) * F.normalize(random_noise, dim=-1) * self.eps
             all_embeddings.append(ego_embeddings)
