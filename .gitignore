@@ -4,4 +4,5 @@ log/
 model/clip-vit-base-patch32
 
 mk_dataset/yelp_*/
+mk_dataset/RAG/
 *.safetensors
