@@ -1,5 +1,7 @@
-training.set: ./dataset/yelp2018/train.txt
-test.set: ./dataset/yelp2018/test.txt
+training.set: ./mk_dataset/yelp_ds_final/train_data.txt
+image.set: ./mk_dataset/photo_embs.safetensors
+item2image.path: ./mk_dataset/yelp_out/re_item2photos.txt
+test.set: ./mk_dataset/yelp_ds_final/test_data.txt
 
 model:
   name: SimGCL

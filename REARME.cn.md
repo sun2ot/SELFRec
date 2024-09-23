@@ -1,6 +1,25 @@
-## 运行方式
+## 运行环境
 
-`conf/` 为各个模型的配置文件。
+- Python 3.9.19
+- mamba 1.5.8
+- conda 24.3.0
+
+pip 部署环境：
+
+```bash
+mamba create -n selfrec python=3.9
+mamba activate selfrec
+pip install -r requirements.txt
+```
+
+conda/mamba 部署环境：
+
+```bash
+conda env create -f environment.yml
+```
+
+> [!warning]
+> requirements.txt 是根据 `mamba list` 的内容导出的，也许存在版本号差异的问题，请自行尝试解决。
 
 ## 一些迷思
 

@@ -20,11 +20,13 @@ class XSimGCL(GraphRecommender):
         self.temp = float(config['tau'])
         self.n_layers = int(config['n_layer'])
         self.layer_cl = int(config['l_star'])
+        self.device = torch.device(f"cuda:{int(self.config['gpu_id'])}" if torch.cuda.is_available() else "cpu")
+        print(f'running on device {self.device}')
         self.image_embs = kwargs.get('image_embs')
-        self.model = XSimGCL_Encoder(self.data, self.image_embs, self.emb_size, self.eps, self.n_layers, self.layer_cl)
+        self.model = XSimGCL_Encoder(self.data, self.image_embs, self.emb_size, self.eps, self.n_layers, self.layer_cl, self.device)
 
     def train(self):
-        model = self.model.cuda(0)
+        model = self.model.cuda(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lRate)
         for epoch in range(self.maxEpoch):
             # 遍历每个批次的数据
@@ -74,8 +76,8 @@ class XSimGCL(GraphRecommender):
             user_cl_loss + item_cl_loss
         """
         # 确定唯一user/item索引
-        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda(0)
-        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda(0)
+        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda(self.device)
+        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda(self.device)
         # 使用InfoNCE损失函数计算user/item的对比损失
         user_cl_loss = InfoNCE(user_view1[u_idx], user_view2[u_idx], self.temp)
         item_cl_loss = InfoNCE(item_view1[i_idx], item_view2[i_idx], self.temp)
@@ -112,8 +114,9 @@ class XSimGCL_Encoder(nn.Module):
     """
     XSimGCL 模型本体
     """
-    def __init__(self, data, image_embs, emb_size, eps, n_layers, layer_cl):
+    def __init__(self, data, image_embs, emb_size, eps, n_layers, layer_cl, device: torch.device):
         super(XSimGCL_Encoder, self).__init__()
+        self.device = device
         self.data = data
         self.image_embs = image_embs
         self.eps = eps  # epsilon -> CL Loss 超参数
@@ -121,8 +124,8 @@ class XSimGCL_Encoder(nn.Module):
         self.n_layers = n_layers
         self.layer_cl = layer_cl
         self.norm_adj = data.norm_adj
-        self.embedding_dict = self._init_model(fusion=True)
-        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda(0)
+        self.embedding_dict = self._init_model(fusion=False)
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda(self.device)
 
     def _init_model(self, fusion=False):
         """
@@ -136,15 +139,17 @@ class XSimGCL_Encoder(nn.Module):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
             # 创建用户&项目的嵌入矩阵(size = 数量 x 嵌入尺寸)
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device='cuda:0'))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device='cuda:0'))),
+            # 'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device='cuda:0'))),
+            # 'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device='cuda:0'))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=self.device))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=self.device))),
         })
 
         if fusion:
             if self.image_embs:
                 #todo 先尝试从这里加入图片模态特征
                 #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
-                item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device='cuda:0')
+                item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device=self.device)
                 alpha = 0.5  # item 模态融合权重
                 try:
                     # print('开始模态融合')
@@ -187,7 +192,7 @@ class XSimGCL_Encoder(nn.Module):
                 # 为嵌入向量添加扰动
                 # Returns a tensor with the same size as input 
                 # that is filled with random numbers from a uniform distribution on the interval [0, 1)
-                random_noise = torch.rand_like(ego_embeddings).cuda(0)
+                random_noise = torch.rand_like(ego_embeddings).cuda(self.device)
                 # torch.sign returns a new tensor with the signs(1|-1|0) of the elements of input.
                 ego_embeddings += torch.sign(ego_embeddings) * F.normalize(random_noise, dim=-1) * self.eps
             all_embeddings.append(ego_embeddings)
