@@ -1,0 +1,10 @@
+{
+    "editor.fontFamily": "FiraMono Nerd Font, MiSans",
+    "terminal.integrated.fontFamily": "FiraMono Nerd Font",
+    "editor.fontVariations": false,
+    "editor.tokenColorCustomizations": {
+        "comments": {
+            "fontStyle": ""
+        }
+    }
+}
