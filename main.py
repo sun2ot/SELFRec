@@ -1,5 +1,6 @@
 from SELFRec import SELFRec
 from util.conf import ModelConf
+from util.logger import Log
 import time
 
 def print_models(title, models):
@@ -30,6 +31,7 @@ if __name__ == '__main__':
         rec.execute()
         e = time.time()
         print(f"Running time: {e - s:.2f} s")
+        Log().add(f"Running time: {e - s:.2f} s")
     else:
         print('Wrong model name!')
         exit(-1)

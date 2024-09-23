@@ -12,7 +12,7 @@ import tqdm
 
 
 class XSimGCL(GraphRecommender):
-    def __init__(self, conf, training_set, test_set):
+    def __init__(self, conf, training_set, test_set, **kwargs):
         super(XSimGCL, self).__init__(conf, training_set, test_set)
         config = self.config['XSimGCL']
         self.cl_rate = float(config['lambda'])
@@ -20,10 +20,11 @@ class XSimGCL(GraphRecommender):
         self.temp = float(config['tau'])
         self.n_layers = int(config['n_layer'])
         self.layer_cl = int(config['l_star'])
-        self.model = XSimGCL_Encoder(self.data, self.emb_size, self.eps, self.n_layers, self.layer_cl)
+        self.image_embs = kwargs.get('image_embs')
+        self.model = XSimGCL_Encoder(self.data, self.image_embs, self.emb_size, self.eps, self.n_layers, self.layer_cl)
 
     def train(self):
-        model = self.model.cuda(1)
+        model = self.model.cuda(0)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lRate)
         for epoch in range(self.maxEpoch):
             # 遍历每个批次的数据
@@ -73,8 +74,8 @@ class XSimGCL(GraphRecommender):
             user_cl_loss + item_cl_loss
         """
         # 确定唯一user/item索引
-        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda(1)
-        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda(1)
+        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda(0)
+        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda(0)
         # 使用InfoNCE损失函数计算user/item的对比损失
         user_cl_loss = InfoNCE(user_view1[u_idx], user_view2[u_idx], self.temp)
         item_cl_loss = InfoNCE(item_view1[i_idx], item_view2[i_idx], self.temp)
@@ -111,16 +112,17 @@ class XSimGCL_Encoder(nn.Module):
     """
     XSimGCL 模型本体
     """
-    def __init__(self, data, emb_size, eps, n_layers, layer_cl):
+    def __init__(self, data, image_embs, emb_size, eps, n_layers, layer_cl):
         super(XSimGCL_Encoder, self).__init__()
         self.data = data
+        self.image_embs = image_embs
         self.eps = eps  # epsilon -> CL Loss 超参数
         self.emb_size = emb_size
         self.n_layers = n_layers
         self.layer_cl = layer_cl
         self.norm_adj = data.norm_adj
         self.embedding_dict = self._init_model(fusion=True)
-        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda(1)
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda(0)
 
     def _init_model(self, fusion=False):
         """
@@ -134,24 +136,28 @@ class XSimGCL_Encoder(nn.Module):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
             # 创建用户&项目的嵌入矩阵(size = 数量 x 嵌入尺寸)
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device='cuda:1'))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device='cuda:1'))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device='cuda:0'))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device='cuda:0'))),
         })
 
         if fusion:
-            #todo 先尝试从这里加入图片模态特征
-            #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
-            item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device='cuda:1')
-            alpha = 0.5  # item 模态融合权重
-            try:
-                # print('开始模态融合')
-                for idx, tensor in enumerate(embedding_dict['item_emb']):
-                    # id -> init embedding
-                    item_emb_list[idx] = alpha * tensor + (1-alpha) * self.data.image_embs[self.data.id2item[idx]]
-                embedding_dict['item_emb'] = item_emb_list
-            except Exception as e:
-                Log.catch(e, idx, '模态融合')
-                exit(-1)
+            if self.image_embs:
+                #todo 先尝试从这里加入图片模态特征
+                #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
+                item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device='cuda:0')
+                alpha = 0.5  # item 模态融合权重
+                try:
+                    # print('开始模态融合')
+                    for idx, tensor in enumerate(embedding_dict['item_emb']):
+                        # id -> init embedding
+                        item_emb_list[idx] = alpha * tensor + (1-alpha) * self.image_embs[self.data.id2item[idx]]
+                    embedding_dict['item_emb'] = item_emb_list
+                except Exception as e:
+                    Log.catch(e, idx, '模态融合')
+                    exit(-1)
+            else:
+                raise ValueError('fusion set True but accepted None image_embs.')
+        
         return embedding_dict
 
     def forward(self, perturbed=False):
@@ -181,7 +187,7 @@ class XSimGCL_Encoder(nn.Module):
                 # 为嵌入向量添加扰动
                 # Returns a tensor with the same size as input 
                 # that is filled with random numbers from a uniform distribution on the interval [0, 1)
-                random_noise = torch.rand_like(ego_embeddings).cuda(1)
+                random_noise = torch.rand_like(ego_embeddings).cuda(0)
                 # torch.sign returns a new tensor with the signs(1|-1|0) of the elements of input.
                 ego_embeddings += torch.sign(ego_embeddings) * F.normalize(random_noise, dim=-1) * self.eps
             all_embeddings.append(ego_embeddings)

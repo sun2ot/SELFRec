@@ -6,16 +6,25 @@ class SELFRec(object):
         self.social_data = []
         self.feature_data = []
         self.config = config
+
+        print('Reading data and preprocessing...')
+
         self.training_data = FileIO.load_data_set(config['training.set'], config['model']['type'])
         self.test_data = FileIO.load_data_set(config['test.set'], config['model']['type'])
 
         self.kwargs = {}
         if config.contain('social.data'):
-            social_data = FileIO.load_social_data(self.config['social.data'])
+            social_data = FileIO.load_social_data(config['social.data'])
             self.kwargs['social.data'] = social_data
         # if config.contains('feature.data'):
         #     self.social_data = FileIO.loadFeature(config,self.config['feature.data'])
-        print('Reading data and preprocessing...')
+        if config.contain('image_modal'):
+            self.kwargs['image_embs'] = FileIO.load_image_data(
+                config['image_modal']['image_set'],
+                config['image_modal']['item2image'],
+                config['embedding.size']
+            )
+
 
     def execute(self):
         # import the model module

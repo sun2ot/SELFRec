@@ -2,13 +2,18 @@ import os.path
 from os import remove
 from re import split
 from typing import Literal
+import torch
+import torch.nn as nn
+from safetensors import safe_open
+from util.logger import Log
+import tqdm
 
 class FileIO(object):
     def __init__(self):
         pass
 
     @staticmethod
-    def write_file(dir: str, file, content, op='w'):
+    def write_file(dir: str, file: str, content, op='w'):
         """
         将内容写入指定路径和文件名的文件中
 
@@ -84,3 +89,39 @@ class FileIO(object):
                     weight = float(items[2])
                 social_data.append([user1, user2, weight])
         return social_data
+    
+
+    @staticmethod
+    def load_image_data(image_set: str, item2image: str, emb_size: int):
+        """
+        加载图片数据集：
+        读取图像预处理数据并从CLIP模型输出的512维投影到embedding_size
+
+        Args:
+            image_set (str): 图片数据集路径
+            item2image (str): item -> 图片映射文件
+            emb_size (int): 投影维度
+        
+        Returns:
+            image_embs (dict): item (str) -> mean image embedding (pytorch tensor)
+        """
+        image_embs = {}  # item -> mean image embedding
+
+        # 定义一个线性层将512维图像特征映射到emb_size
+        linear_projection = nn.Linear(512, emb_size).to('cuda')
+        image_safetensors = safe_open(image_set, 'pt', device='cuda')
+        with open(item2image, 'r') as map_file:
+            print(f'Start reading image embedding safetensors file and project to {emb_size} dimensions')
+            for line in tqdm.tqdm(map_file):
+                item = line.strip().split(' ')[0]
+                images = line.strip().split(' ')[1:]
+                try:
+                    image_embs[item] = linear_projection(
+                        torch.mean(
+                        torch.stack([image_safetensors.get_tensor(image) for image in images]), dim=0)
+                        )
+                except Exception as e:
+                    Log.catch(e, item, 'item2photo emb project')
+                    # print(f'\n{"-"*50}\n{item} error:\n{e}\n{"-"*50}')
+                    exit(-1)
+        return image_embs
