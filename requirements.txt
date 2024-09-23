@@ -10,3 +10,4 @@ pandas==2.2.2
 scikit-learn==1.5.1
 transformers==4.44.1
 pillow==10.4.0
+ipykernel==6.28.0
