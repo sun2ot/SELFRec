@@ -1,8 +1,9 @@
 training.set: ./mk_dataset/yelp_ds_final/train_data.txt
 test.set: ./mk_dataset/yelp_ds_final/test_data.txt
-# image_modal:
-#   image_set: ./mk_dataset/photo_embs.safetensors
-#   item2image: ./mk_dataset/yelp_out/re_item2photos.txt
+image_modal:
+  fusion: False
+  image_set: ./mk_dataset/photo_embs.safetensors
+  item2image: ./mk_dataset/yelp_out/re_item2photos.txt
 
 model:
   name: XSimGCL
@@ -23,6 +24,6 @@ XSimGCL:
   eps: 0.2
   tau: 0.15
 
-gpu_id: 0
+gpu_id: 1
 
 output: ./results/

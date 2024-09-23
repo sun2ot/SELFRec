@@ -18,11 +18,12 @@ class SELFRec(object):
             self.kwargs['social.data'] = social_data
         # if config.contains('feature.data'):
         #     self.social_data = FileIO.loadFeature(config,self.config['feature.data'])
-        if config.contain('image_modal'):
+        if config.contain('image_modal') and config['image_modal']['fusion']:
             self.kwargs['image_embs'] = FileIO.load_image_data(
                 config['image_modal']['image_set'],
                 config['image_modal']['item2image'],
-                config['embedding.size']
+                config['embedding.size'],
+                config['gpu_id']
             )
 
 

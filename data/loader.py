@@ -92,7 +92,10 @@ class FileIO(object):
     
 
     @staticmethod
-    def load_image_data(image_set: str, item2image: str, emb_size: int):
+    def load_image_data(image_set: str, 
+                        item2image: str, 
+                        emb_size: int, 
+                        device_id: int) -> dict[str, torch.tensor]:
         """
         加载图片数据集：
         读取图像预处理数据并从CLIP模型输出的512维投影到embedding_size
@@ -105,13 +108,13 @@ class FileIO(object):
         Returns:
             image_embs (dict): item (str) -> mean image embedding (pytorch tensor)
         """
-        image_embs = {}  # item -> mean image embedding
-
+        image_embs: dict[str, torch.tensor] = {}  # item -> mean image embedding
+        device = torch.device(f"cuda:{device_id}" if torch.cuda.is_available() else "cpu")
         # 定义一个线性层将512维图像特征映射到emb_size
-        linear_projection = nn.Linear(512, emb_size).to('cuda')
-        image_safetensors = safe_open(image_set, 'pt', device='cuda')
+        linear_projection = nn.Linear(512, emb_size, device=device)
+        image_safetensors = safe_open(image_set, 'pt', device=f"cuda:{device_id}")
         with open(item2image, 'r') as map_file:
-            print(f'Start reading image embedding safetensors file and project to {emb_size} dimensions')
+            print(f'Start reading image embedding safetensors file to {device} and project to {emb_size} dimensions')
             for line in tqdm.tqdm(map_file):
                 item = line.strip().split(' ')[0]
                 images = line.strip().split(' ')[1:]

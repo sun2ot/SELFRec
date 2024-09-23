@@ -124,10 +124,10 @@ class XSimGCL_Encoder(nn.Module):
         self.n_layers = n_layers
         self.layer_cl = layer_cl
         self.norm_adj = data.norm_adj
-        self.embedding_dict = self._init_model(fusion=False)
+        self.embedding_dict = self._init_model()
         self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda(self.device)
 
-    def _init_model(self, fusion=False):
+    def _init_model(self):
         """
         使用Xavier初始化模型的嵌入参数
 
@@ -139,29 +139,25 @@ class XSimGCL_Encoder(nn.Module):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
             # 创建用户&项目的嵌入矩阵(size = 数量 x 嵌入尺寸)
-            # 'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device='cuda:0'))),
-            # 'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device='cuda:0'))),
             'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=self.device))),
             'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=self.device))),
         })
 
-        if fusion:
-            if self.image_embs:
-                #todo 先尝试从这里加入图片模态特征
-                #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
-                item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device=self.device)
-                alpha = 0.5  # item 模态融合权重
-                try:
-                    # print('开始模态融合')
-                    for idx, tensor in enumerate(embedding_dict['item_emb']):
-                        # id -> init embedding
-                        item_emb_list[idx] = alpha * tensor + (1-alpha) * self.image_embs[self.data.id2item[idx]]
-                    embedding_dict['item_emb'] = item_emb_list
-                except Exception as e:
-                    Log.catch(e, idx, '模态融合')
-                    exit(-1)
-            else:
-                raise ValueError('fusion set True but accepted None image_embs.')
+ 
+        if self.image_embs:
+            #todo 先尝试从这里加入图片模态特征
+            #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
+            item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device=self.device)
+            alpha = 0.5  # item 模态融合权重
+            try:
+                # print('开始模态融合')
+                for idx, tensor in enumerate(embedding_dict['item_emb']):
+                    # id -> init embedding
+                    item_emb_list[idx] = alpha * tensor + (1-alpha) * self.image_embs[self.data.id2item[idx]]
+                embedding_dict['item_emb'] = item_emb_list
+            except Exception as e:
+                Log.catch(e, idx, '模态融合')
+                exit(-1)
         
         return embedding_dict
 
