@@ -3,14 +3,14 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 
-def bpr_loss(user_emb, pos_item_emb, neg_item_emb):
+def bpr_loss(user_emb, pos_item_emb, neg_item_embs):
     """
     计算Bayesian Personalized Ranking (BPR) 损失函数
     
     Args:
         user_emb: 用户嵌入向量，形状为[batch_size, embedding_dim]
         pos_item_emb: 正样本物品嵌入向量，形状为[batch_size, embedding_dim]
-        neg_item_emb: 负样本物品嵌入向量，形状为[batch_size, embedding_dim]
+        neg_item_emb: 负样本物品嵌入向量，形状为[batch_size, n_negs, embedding_dim]
     
     Returns:
         BPR损失的平均值，标量张量
@@ -19,9 +19,11 @@ def bpr_loss(user_emb, pos_item_emb, neg_item_emb):
     # torch.mul is element-wise multiplies
     pos_score = torch.mul(user_emb, pos_item_emb).sum(dim=1)
     # 计算用户对负样本的偏好分数
-    neg_score = torch.mul(user_emb, neg_item_emb).sum(dim=1)
-    # 计算BPR损失，鼓励正样本分数高于负样本分数
-    loss = -torch.log(10e-6 + torch.sigmoid(pos_score - neg_score))
+    # neg_score = torch.mul(user_emb, neg_item_embs).sum(dim=1)
+    neg_scores = torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)
+    # BPR损失: 对每个正样本，计算它与所有负样本的损失
+    # loss = -torch.log(10e-6 + torch.sigmoid(pos_score - neg_score))
+    loss = -torch.log(10e-6 + torch.sigmoid(pos_score.unsqueeze(1) - neg_scores))  # [batch_size, n_negs]
     # 返回损失的均值
     return torch.mean(loss)
 

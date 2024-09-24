@@ -2,18 +2,20 @@ from random import shuffle,randint,choice,sample
 import numpy as np
 
 
-def next_batch_pairwise(data, batch_size, n_negs=1):
+def next_batch_pairwise(data, batch_size, n_negs: int=1):
     """
     生成用于训练的批量样本对
 
     Args:
         data: 数据对象，包含训练数据和用户、物品的映射信息
         batch_size: 批量大小，决定每次迭代返回的样本数量
-        n_negs: 每个用户正样本的负样本数量
+        n_negs: 每个用户的负样本数量
 
     Returns:
-        yield: 每次yield出包含用户id、正样本id和负样本id列表
+        yield: 每次yield出包含用户id、正样本id和负样本id列表(默认为1)
     """
+    if n_negs <= 0:
+        raise ValueError("n_negs must be greater than 0")
     # 获取并洗牌训练数据
     # SELFRec.py -> training_data -> [user, item, weight], [...], ...
     training_data = data.training_data
@@ -37,16 +39,20 @@ def next_batch_pairwise(data, batch_size, n_negs=1):
         item_list = list(data.item.keys())
         # 为每个用户生成样本对
         for i, user in enumerate(batch_users):
-            # 添加用户与正样本的索引对(id)
+            # 添加用户与正样本的一个索引对(user_id, pos_item_id)
             i_ids.append(data.item[batch_items[i]])
             u_ids.append(data.user[user])
             # 生成指定数量的负样本索引，并添加到j_ids
+            neg_items = []
             for _ in range(n_negs):
+                # 从所有物品(训练集)随机获取一个负样本
                 neg_item = choice(item_list)
                 # 确保负样本不是用户的历史正样本
                 while neg_item in data.training_set_u[user]:
                     neg_item = choice(item_list)
-                j_ids.append(data.item[neg_item])
+                # j_ids.append(data.item[neg_item])
+                neg_items.append(data.item[neg_item])
+            j_ids.append(neg_items)
         # 返回本批次的用户、正样本和负样本id
         yield u_ids, i_ids, j_ids
 
