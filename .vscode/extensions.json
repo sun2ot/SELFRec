@@ -4,6 +4,8 @@
         "yzhang.markdown-all-in-one",
         "ms-ceintl.vscode-language-pack-zh-hans",
         "ms-python.python",
-        "aaron-bond.better-comments"
+        "aaron-bond.better-comments",
+        "alibaba-cloud.tongyi-lingma",
+        "njpwerner.autodocstring"
     ]
 }

@@ -6,5 +6,7 @@
         "comments": {
             "fontStyle": ""
         }
-    }
+    },
+    "Lingma.cloudModelLanguagesOrFileExtensions": "plaintext, markdown, json",
+    "python.analysis.typeCheckingMode": "standard"
 }
