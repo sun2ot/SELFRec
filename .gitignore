@@ -2,6 +2,7 @@ __pycache__
 results/
 log/
 model/clip-vit-base-patch32
+model/stella_en_1.5B_v5
 
 mk_dataset/yelp_*/
 mk_dataset/RAG/

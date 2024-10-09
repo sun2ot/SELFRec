@@ -1,16 +1,31 @@
 training.set: ./mk_dataset/yelp_ds_final/train_data.txt
 test.set: ./mk_dataset/yelp_ds_final/test_data.txt
+
 image_modal:
-  fusion: False
-  image_set: ./mk_dataset/photo_embs.safetensors
+  fusion: True
+  image_set: ./mk_dataset/yelp_out/photo_embs.safetensors
   item2image: ./mk_dataset/yelp_out/re_item2photos.txt
+
+text_modal:
+  fusion: True
+  item_text: ./mk_dataset/yelp_out/item_text_embs.safetensors
+  user_pref: ./mk_dataset/yelp_out/user_pre_embs.safetensors
+
+llm:
+  augment: False
+  model: qwen2.5:0.5b
+  host: http://127.0.0.1:11434
+        # node09: http://172.16.110.34:45665
+  num_gpu: 2
+  num_thread: 48
+  prompt: ./conf/aug_prompt.txt
+  save: ./mk_dataset/yelp_text_aug.json
 
 model:
   name: XSimGCL
   type: graph
 
-item.ranking.topN: [10,20]
-
+item.ranking.topN: [20]
 embedding.size: 64
 max.epoch: 20
 batch.size: 2048
@@ -19,7 +34,8 @@ reg.lambda: 0.0001
 
 XSimGCL:
   n_layer: 2
-  l_star: 1
+  n_negs: 5
+  cl_layer: 1
   lambda: 0.2
   eps: 0.2
   tau: 0.15
