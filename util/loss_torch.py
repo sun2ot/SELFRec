@@ -10,20 +10,53 @@ def bpr_loss(user_emb, pos_item_emb, neg_item_embs):
     Args:
         user_emb: 用户嵌入向量，形状为[batch_size, embedding_dim]
         pos_item_emb: 正样本物品嵌入向量，形状为[batch_size, embedding_dim]
-        neg_item_emb: 负样本物品嵌入向量，形状为[batch_size, n_negs, embedding_dim]
+        neg_item_emb: 负样本物品嵌入向量，形状为[batch_size, embedding_dim]
     
     Returns:
         BPR损失的平均值，标量张量
     """
     # 计算用户对正样本的偏好分数
     # torch.mul is element-wise multiplies
-    pos_score = torch.mul(user_emb, pos_item_emb).sum(dim=1)
+    pos_score = torch.mul(user_emb, pos_item_emb).sum(dim=1)  # (batch_size)
+    # 计算用户对负样本的偏好分数
+    neg_score = torch.mul(user_emb, neg_item_embs).sum(dim=1)  # (batch_size)
+    # BPR损失: 对每个正样本，计算它与所有负样本的损失
+    loss = -torch.log(10e-6 + torch.sigmoid(pos_score - neg_score))  # (batch_size)
+    # 返回损失的均值
+    return torch.mean(loss)
+
+
+def bpr_loss_w(user_emb, pos_item_emb, neg_item_embs, neg_weights = None):
+    """
+    Bayesian Personalized Ranking (BPR) 损失函数
+    fix:
+        1. 多负样本(中心性权重控制)
+        2. 文本模态引导负样本筛选
+    
+    Args:
+        user_emb: 用户嵌入向量 (batch_size, embedding_dim)
+        pos_item_emb: 正样本物品嵌入向量 (batch_size, embedding_dim)
+        neg_item_embs: 负样本物品嵌入向量 (batch_size, n_negs, embedding_dim)
+        neg_weights: 负样本权重 (batch_size, n_negs)
+    
+    Returns:
+        BPR损失的平均值，标量张量
+    """
+    # 计算用户对正样本的偏好分数
+    # torch.mul is element-wise multiplies
+    pos_score = torch.mul(user_emb, pos_item_emb).sum(dim=1)  # [batch_size]
+
     # 计算用户对负样本的偏好分数
     # neg_score = torch.mul(user_emb, neg_item_embs).sum(dim=1)
-    neg_scores = torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)
-    # BPR损失: 对每个正样本，计算它与所有负样本的损失
+    if neg_weights:
+        neg_scores = neg_weights * torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)  # [batch_size, n_negs]
+    else:
+        neg_scores = torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)
+
+    # BPR Loss
     # loss = -torch.log(10e-6 + torch.sigmoid(pos_score - neg_score))
     loss = -torch.log(10e-6 + torch.sigmoid(pos_score.unsqueeze(1) - neg_scores))  # [batch_size, n_negs]
+
     # 返回损失的均值
     return torch.mean(loss)
 
@@ -33,7 +66,7 @@ def triplet_loss(user_emb, pos_item_emb, neg_item_emb):
     loss = F.relu(pos_score-neg_score+0.5)
     return torch.mean(loss)
 
-def l2_reg_loss(reg, *args):
+def l2_reg_loss(reg, *args) -> torch.Tensor:
     """
     计算L2正则化损失
 
@@ -79,6 +112,8 @@ def InfoNCE(view1, view2, temperature: float, b_cos: bool = True):
     Returns:
         Average InfoNCE Loss
     """
+    if view1.shape != view2.shape:
+        raise ValueError(f"InfoNCE expected the same shape for two views. But got view1.shape={view1.shape} and view2.shape={view2.shape}.")
     # 如果使用余弦相似度，则先进行归一化
     if b_cos:
         view1, view2 = F.normalize(view1, dim=1), F.normalize(view2, dim=1)
@@ -91,13 +126,14 @@ def InfoNCE(view1, view2, temperature: float, b_cos: bool = True):
 
 #this version is from recbole
 def info_nce(z_i, z_j, temp, batch_size, sim='dot'):
+    raise NotImplementedError
     """
     We do not sample negative examples explicitly.
     Instead, given a positive pair, similar to (Chen et al., 2017), we treat the other 2(N − 1) augmented examples within a minibatch as negative examples.
     """
     def mask_correlated_samples(batch_size):
         N = 2 * batch_size
-        mask = torch.ones((N, N), dtype=bool)
+        mask = torch.ones((N, N), dtype=bool) 
         mask = mask.fill_diagonal_(0)
         for i in range(batch_size):
             mask[i, batch_size + i] = 0
