@@ -3,15 +3,22 @@ from data.ui_graph import Interaction
 from util.algorithm import find_k_largest
 from time import strftime, localtime, time
 from data.loader import FileIO
+import os
 from os.path import abspath
 from util.evaluation import ranking_evaluation
-import sys
+from dotenv import load_dotenv
+from qywx_bot.bot import Bot
+
+load_dotenv()
+key = os.getenv('WEBHOOK_KEY')
+if key is not None:
+    bot: Bot = Bot(key)
 
 
 class GraphRecommender(Recommender):
     def __init__(self, conf, training_set, test_set, **kwargs):
         super().__init__(conf, training_set, test_set, **kwargs)
-        self.data = Interaction(conf, training_set, test_set)
+        self.data = Interaction(conf, training_set, test_set, **kwargs)
         self.bestPerformance = []  # [epoch, performance{recall:0.0, precision:0.0, ...}]
         self.topN = [int(num) for num in self.ranking]  # 10, 20
         self.max_N = max(self.topN)
@@ -35,7 +42,7 @@ class GraphRecommender(Recommender):
         pass
 
     def predict(self, u):
-        pass
+        raise NotImplementedError
 
     def test(self):
         """
@@ -113,10 +120,14 @@ class GraphRecommender(Recommender):
         self.result = ranking_evaluation(self.data.test_set, rec_list, self.topN)
         # 日志输出评估指标
         self.model_log.add('###Evaluation Results###')
-        self.model_log.add(self.result)
+        result_format_str = '\n'
+        for r in self.result:
+            result_format_str += r
+        self.model_log.add(result_format_str)
         FileIO.write_file(out_dir, file_name, self.result)
         # CLI 输出评估指标
         print(f'The result of {self.model_name}:\n{"".join(self.result)}')
+        bot.send_text(f'The result of {self.model_name}:\n{"".join(self.result)}')
 
     def fast_evaluation(self, epoch):
         """
