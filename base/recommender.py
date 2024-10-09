@@ -22,7 +22,7 @@ class Recommender:
 
         # Use f-string for better readability
         current_time = strftime("%Y-%m-%d %H-%M-%S", localtime(time()))
-        self.model_log = Log(self.model_name, f"{self.model_name} {current_time}")
+        self.model_log = Log(module=self.model_name, filename=f"{self.model_name} {current_time}")
 
         self.result = []
         self.recOutput = []
@@ -51,25 +51,25 @@ class Recommender:
             print('Specific parameters:', parStr)
 
     def build(self):
-        pass
+        raise NotImplementedError
 
     def train(self):
-        pass
+        raise NotImplementedError
 
     def predict(self, u):
-        pass
+        raise NotImplementedError
 
     def test(self):
-        pass
+        raise NotImplementedError
 
     def save(self):
-        pass
-
+        raise NotImplementedError
+    
     def load(self):
-        pass
+        raise NotImplementedError
 
     def evaluate(self, rec_list):
-        pass
+        raise NotImplementedError
 
     def execute(self):
         self.initializing_log()

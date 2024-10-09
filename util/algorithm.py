@@ -142,13 +142,13 @@ def denormalize(vec, max_val, min_val):
 
 
 @jit(nopython=True)
-def find_k_largest(K, candidates):
+def find_k_largest(K: int, candidates: list):
     """
     从候选集中找到前K个最大值
 
     Args:
         K (int): top K
-        candidates (list): 评分候选列表
+        candidates (list): 评分候选列表 [(item_id, score)]
     
     Returns:
         (ids, k_largest_scores) (list, list): 最大值索引列表, 最大值列表

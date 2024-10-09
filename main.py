@@ -31,7 +31,7 @@ if __name__ == '__main__':
         rec.execute()
         e = time.time()
         print(f"Running time: {e - s:.2f} s")
-        Log().add(f"Running time: {e - s:.2f} s")
+        Log(module=conf['model']['name']).add(f"Running time: {e - s:.2f} s")
     else:
         print('Wrong model name!')
         exit(-1)
