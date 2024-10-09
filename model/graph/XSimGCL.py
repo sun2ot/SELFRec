@@ -4,28 +4,29 @@ import torch.nn.functional as F
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE
+from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE, bpr_loss_w
 from util.logger import Log
-import tqdm
+from data.ui_graph import Interaction
+from tqdm import tqdm
 
-# Paper: XSimGCL - Towards Extremely Simple Graph Contrastive Learning for Recommendation
+#todo 测试 torch.jit 的加速效果
+bpr_loss_script = torch.jit.script(bpr_loss)
 
 
 class XSimGCL(GraphRecommender):
     def __init__(self, conf, training_set, test_set, **kwargs):
-        super(XSimGCL, self).__init__(conf, training_set, test_set)
+        super(XSimGCL, self).__init__(conf, training_set, test_set, **kwargs)
         config = self.config['XSimGCL']
         self.cl_rate = float(config['lambda'])
         self.eps = float(config['eps'])
         self.temp = float(config['tau'])
         self.n_layers = int(config['n_layer'])
         self.n_negs = int(config['n_negs'])
-        self.layer_cl = int(config['l_star'])
+        self.cl_layer = int(config['cl_layer'])
         self.device = torch.device(f"cuda:{int(self.config['gpu_id'])}" if torch.cuda.is_available() else "cpu")
-        print(f'running on device {self.device}')
-        self.image_embs = kwargs.get('image_embs')
-        self.model = XSimGCL_Encoder(self.data, self.image_embs,
-                                     self.emb_size, self.eps, self.n_layers, self.layer_cl,
+        Log.cli('Model', f'running on device {self.device}')
+        self.model = XSimGCL_Encoder(self.data,
+                                     self.emb_size, self.eps, self.n_layers, self.cl_layer,
                                      self.device)
 
     def train(self):
@@ -35,18 +36,55 @@ class XSimGCL(GraphRecommender):
             # 遍历每个批次的数据
             for n, batch_data in enumerate(next_batch_pairwise(self.data, self.batch_size, self.n_negs)):
                 user_ids, pos_ids, neg_ids = batch_data
+
                 # 获取推荐子图嵌入和对比学习子图嵌入
-                #? 这个True参数哪来的, 推测为perturbed=True, 否则不会有四个返回值
-                rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb  = model(perturbed=True)
+                # rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb = model(perturbed=True)
+                rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb, image_side_user, text_side_user = model(perturbed=True)
                 # 根据批次数据获取用户的嵌入、正样本嵌入和负样本嵌入
                 #* 这里看似字典形式获取，实则为索引，可参考下文predict()
-                user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_ids], rec_item_emb[pos_ids], rec_item_emb[neg_ids]
+                #? neg_ids 为多值时，形状如何？ -> (batch_size, n_negs, dim)
+                user_emb, pos_item_emb, neg_item_embs = rec_user_emb[user_ids], rec_item_emb[pos_ids], rec_item_emb[neg_ids]
+
+                #* 根据 neg_ids 取出对应中心性系数
+                item_id_centrality = self.data.item_id_centrality
+                neg_item_centralities = []
+                for neg_id in neg_ids:
+                    neg_item_centralities.append([item_id_centrality[id] for id in neg_id])
+                # 负样本权重 (batch_size, n_negs)
+                neg_weights = torch.tensor(neg_item_centralities, dtype=torch.float, device=self.device)
+                norm_neg_weights = F.normalize(neg_weights, p=2, dim=1)
+
+                #todo 文本模态引导负样本采样
+                # 初始化
+                hard_neg_item_embs = torch.empty(size=(len(neg_ids), self.emb_size), dtype=torch.float, device=self.device)
+                # 获取用户偏好
+                user_pref_emb = self.data.user_pref_tensor[user_ids].unsqueeze(1)  # (batch_size, 1, emb_size)
+                # 计算相似度
+                similarity = F.cosine_similarity(user_pref_emb, norm_neg_weights.unsqueeze(-1) * neg_item_embs, dim=2)  # (batch_size, n_negs)
+                # 排序索引
+                sorted_indices = torch.argsort(similarity, descending=True, dim=-1)
+                # 最小值索引
+                lowest_sim_indices = sorted_indices[:, -self.n_negs]  # (batch_size, n_negs)
+                # 相似度最低样本组成硬负样本  # (batch_size, n_negs/2, emb_size)
+                hard_neg_item_embs = neg_item_embs[torch.arange(len(neg_ids), device=self.device), lowest_sim_indices]
+
                 # 计算推荐损失
-                rec_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb)
+                rec_loss1 = bpr_loss_w(user_emb, pos_item_emb, hard_neg_item_embs)
+                # rec_loss2 = bpr_loss_w(user_emb, pos_item_emb, neg_item_embs, norm_neg_weights)
+
                 # 计算对比学习损失
                 cl_loss = self.cl_rate * self.cal_cl_loss([user_ids, pos_ids], rec_user_emb, cl_user_emb, rec_item_emb, cl_item_emb)
+
+                # 跨模态对比学习损失(注意id的选择与对比视图应对应)
+                cross_modal_loss1 = self.cl_rate * self.cross_modal_loss(user_ids, rec_user_emb, image_side_user)
+                cross_modal_loss2 = self.cl_rate * self.cross_modal_loss(user_ids, rec_user_emb, text_side_user)
+                cross_modal_loss = cross_modal_loss1 + cross_modal_loss2
+                
                 # 计算批次总损失
-                batch_loss = rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss
+                # batch_loss = rec_loss2 + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss
+                batch_loss = rec_loss1 + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss + cross_modal_loss
+                # batch_loss = rec_loss2 + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss + cross_modal_loss
+
                 # 梯度清零
                 optimizer.zero_grad()
                 # 反向传播
@@ -55,7 +93,8 @@ class XSimGCL(GraphRecommender):
                 optimizer.step()
 
                 if n % 100 == 0 and n > 0:
-                    print('training epoch:', epoch + 1, 'batch', n, 'rec_loss:', rec_loss.item(), 'cl_loss', cl_loss.item())
+                    print(f"epoch: {epoch+1}, batch: {n}, rec_loss: {rec_loss1.item()}, cl_loss: {cl_loss.item()}, cross_modal_loss: {cross_modal_loss.item()}")
+                    # print(f"epoch: {epoch+1}, batch: {n}, rec_loss: {rec_loss1.item()}, cl_loss: {cl_loss.item()}")
             
             # epoch结束，验证并更新最佳模型
             with torch.no_grad():
@@ -64,7 +103,7 @@ class XSimGCL(GraphRecommender):
         # 最终更新用户嵌入和物品嵌入为最佳嵌入
         self.user_emb, self.item_emb = self.best_user_emb, self.best_item_emb
 
-    def cal_cl_loss(self, idx, user_view1, user_view2, item_view1, item_view2):
+    def cal_cl_loss(self, idx: list[list[int]], user_view1, user_view2, item_view1, item_view2):
         """
         对比学习损失函数
         
@@ -78,7 +117,7 @@ class XSimGCL(GraphRecommender):
         Returns:
             user_cl_loss + item_cl_loss
         """
-        # 确定唯一user/item索引
+        # 确定唯一user/item索引 (u_idx ==/!= idx[0])
         u_idx = torch.unique(torch.tensor(idx[0], dtype=torch.long, device=self.device))
         i_idx = torch.unique(torch.tensor(idx[1], dtype=torch.long, device=self.device))
         # 使用InfoNCE损失函数计算user/item的对比损失
@@ -87,9 +126,23 @@ class XSimGCL(GraphRecommender):
         return user_cl_loss + item_cl_loss
 
 
+    def cross_modal_loss(self, idx: list[int], modal_view1: torch.Tensor, modal_view2: torch.Tensor):
+        """(测试)跨模态对比学习损失
+
+        Args:
+            idx (list[int]): 正样本索引
+            modal_view1 (torch.Tensor): 模态1
+            modal_view2 (torch.Tensor): 模态2
+        """
+        idx_tensor = torch.unique(torch.tensor(idx, dtype=torch.long, device=self.device))
+        cl_loss = InfoNCE(modal_view1[idx_tensor], modal_view2[idx_tensor], self.temp)
+        return cl_loss
+
+
     def save(self):
         with torch.no_grad():
-            self.best_user_emb, self.best_item_emb = self.model.forward()
+            out = self.model.forward()
+            self.best_user_emb, self.best_item_emb = out[0], out[1]
 
     def predict(self, u):
         """
@@ -117,20 +170,19 @@ class XSimGCL_Encoder(nn.Module):
     """
     XSimGCL 模型本体
     """
-    def __init__(self, data, image_embs, emb_size, eps, n_layers, layer_cl, device: torch.device):
+    def __init__(self, data: Interaction, emb_size, eps, n_layers, cl_layer, device: torch.device):
         super(XSimGCL_Encoder, self).__init__()
         self.device = device
         self.data = data
-        self.image_embs = image_embs
         self.eps = eps  # epsilon -> CL Loss 超参数
         self.emb_size = emb_size
         self.n_layers = n_layers
-        self.layer_cl = layer_cl
+        self.cl_layer = cl_layer
         self.norm_adj = data.norm_adj
-        self.embedding_dict = self._init_model(device=self.device)
+        self.embedding_dict = self._init_model()
         self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj, device=self.device)
 
-    def _init_model(self, device: torch.device):
+    def _init_model(self):
         """
         使用Xavier初始化模型的嵌入参数
 
@@ -142,25 +194,39 @@ class XSimGCL_Encoder(nn.Module):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
             # 创建用户&项目的嵌入矩阵(size = 数量 x 嵌入尺寸)
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=device))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=device))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=self.device))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=self.device))),
+            'image_emb': nn.Parameter(self.data.image_embs_tensor),  # (item_num, dim)
+            'text_emb': nn.Parameter(self.data.item_text_tensor),  # (item_num, dim)
+            'fusion_weight': nn.Parameter(F.softmax(torch.randn(3, device=self.device), dim=0)) # (3)
         })
 
- 
-        if self.image_embs:
-            #todo 先尝试从这里加入图片模态特征
-            #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
-            item_emb_list = torch.zeros((self.data.item_num, self.emb_size), device=device)
-            alpha = 0.5  # item 模态融合权重
-            try:
-                print('Start image-modal fusion')
-                for idx, tensor in enumerate(embedding_dict['item_emb']):
-                    # id -> init embedding
-                    item_emb_list[idx] = alpha * tensor + (1-alpha) * self.image_embs[self.data.id2item[idx]]
-                embedding_dict['item_emb'] = item_emb_list
-            except Exception as e:
-                Log.catch(e, idx, '模态融合')
-                exit(-1)
+        # 图像模态融合v1
+        # if self.data.image_embs is not None:
+        #     #* 直接在GPU上初始化，否则会因频繁数据传输导致速度极慢
+        #     item_embeddings = torch.zeros((self.data.item_num, self.emb_size), device=self.device)
+        #     alpha = 0.5  # item 模态融合权重
+        #     Log.cli('Model init', '📷 Image-modal fusion')
+        #     for iid, image_tensor in enumerate(embedding_dict['item_emb']):
+        #         try:
+        #             item_embeddings[iid] = alpha * image_tensor + (1-alpha) * self.data.image_embs_tensor[iid]
+        #         except Exception as e:
+        #             Log.catch(exception=e, position=str(iid), subject='fusion')
+        #             exit(-1)
+        #     embedding_dict['item_emb'] = item_embeddings
+
+        #! bug: core dumped 用户偏好增强
+        # if self.data.user_pref_tensor is not None:
+        #     user_embeddings = torch.zeros((self.data.user_num, self.emb_size), device=self.device)
+        #     beta = 0.5  # 偏好融合权重
+        #     Log.cli('Model init', '👨 User preference fusion')
+        #     for uid, user_tensor in enumerate(embedding_dict['user_emb']):
+        #         try:
+        #             user_embeddings[uid] = beta * user_tensor + (1-beta) * self.data.user_pref_tensor[uid]
+        #         except Exception as e:
+        #             Log.catch(exception=e, position=str(uid), subject='fusion')
+        #             exit(-1)
+        #     embedding_dict['user_emb'] = user_embeddings
         
         return embedding_dict
 
@@ -177,33 +243,67 @@ class XSimGCL_Encoder(nn.Module):
             否则返回user&item emb
         """
         # 将用户和物品嵌入拼接在一起，形成初始的嵌入矩阵
+        # (user_num, dim) || (item_num, dim) = (node_num, dim)
         ego_embeddings = torch.cat([self.embedding_dict['user_emb'], self.embedding_dict['item_emb']], 0)
+        image_side_embs = torch.cat([self.embedding_dict['user_emb'], self.embedding_dict['image_emb']], 0)
+        text_side_embs = torch.cat([self.embedding_dict['user_emb'], self.embedding_dict['text_emb']], 0)
         # 初始化一个列表，用于存储每一层的嵌入向量
         all_embeddings = []
+        all_image_embeddings = []
+        all_text_embeddings = []
         # 用于存储对比对比学习模块最终层的嵌入向量
         #! 尚未进行CL，只是经过两层LightGCN
         all_embeddings_cl = ego_embeddings
         # 对于每一层进行消息传递和聚合
         for k in range(self.n_layers):
-            # 信息传播: 邻接矩阵 x 嵌入向量 -> torch.Size([69716, 69716]) x torch.Size([69716, 64])
+            # 信息传播: 邻接矩阵 x 嵌入向量 -> torch.Size([node_num, node_num]) x torch.Size([node_num, dim])
             ego_embeddings = torch.sparse.mm(self.sparse_norm_adj, ego_embeddings)
+            image_side_embs = torch.sparse.mm(self.sparse_norm_adj, image_side_embs)
+            text_side_embs = torch.sparse.mm(self.sparse_norm_adj, text_side_embs)
             if perturbed:
                 # 为嵌入向量添加扰动
                 # Returns a tensor with the same size as input 
                 # that is filled with random numbers from a uniform distribution on the interval [0, 1)
-                random_noise = torch.rand_like(ego_embeddings, device=self.device)
+                random_noise = torch.rand_like(ego_embeddings)
                 # torch.sign returns a new tensor with the signs(1|-1|0) of the elements of input.
                 ego_embeddings += torch.sign(ego_embeddings) * F.normalize(random_noise, dim=-1) * self.eps
+            
+            image_side_embs = nn.LeakyReLU(negative_slope=0.01)(image_side_embs)
+            text_side_embs = nn.LeakyReLU(negative_slope=0.01)(text_side_embs)
+
+            image_side_embs = nn.Dropout(p=0.5)(image_side_embs)
+            text_side_embs = nn.Dropout(p=0.5)(text_side_embs)
+
+            norm_image_embs = F.normalize(image_side_embs, p=2, dim=1)
+            norm_text_embs = F.normalize(text_side_embs, p=2, dim=1)
+            
             all_embeddings.append(ego_embeddings)
-            # 如果当前层是对比学习模块的最后一层，保存此时的嵌入向量
-            if k == self.layer_cl-1:
+            all_image_embeddings.append(norm_image_embs)
+            all_text_embeddings.append(norm_text_embs)
+
+            # 选定对比学习所在层
+            if k == self.cl_layer-1:
                 all_embeddings_cl = ego_embeddings
+
         # 将所有层的嵌入向量堆叠成一个三维矩阵，然后在第二维度上取平均，得到最终的嵌入向量
-        final_embeddings = torch.stack(all_embeddings, dim=1)  # torch.Size([69716, 2, 64])
-        final_embeddings = torch.mean(final_embeddings, dim=1)  # torch.Size([69716, 64])
+        final_embeddings = torch.mean(torch.stack(all_embeddings, dim=1), dim=1)
+        final_image_embeddings = torch.mean(torch.stack(all_image_embeddings, dim=1), dim=1)
+        final_text_embeddings = torch.mean(torch.stack(all_text_embeddings, dim=1), dim=1)
+
         # 将最终的嵌入向量分割成用户嵌入和物品嵌入
         user_all_embeddings, item_all_embeddings = torch.split(final_embeddings, [self.data.user_num, self.data.item_num])
         user_all_embeddings_cl, item_all_embeddings_cl = torch.split(all_embeddings_cl, [self.data.user_num, self.data.item_num])
+        
+        # 分割出传播后的 image/text embeddings
+        image_side_user, all_image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
+        text_side_user, all_text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
+
+        # 模态融合v3
+        fusion_weight: torch.Tensor = self.embedding_dict['fusion_weight'].view(-1, 1, 1) # (3,1,1)
+        item_all_embeddings = torch.stack([item_all_embeddings, all_image_embs, all_text_embs], dim=0)  # (3, item_num, dim)
+        item_all_embeddings = (fusion_weight * item_all_embeddings).sum(dim=0)
+        
         if perturbed:
-            return user_all_embeddings, item_all_embeddings,user_all_embeddings_cl, item_all_embeddings_cl
+            # return user_all_embeddings, item_all_embeddings,user_all_embeddings_cl, item_all_embeddings_cl
+            return user_all_embeddings, item_all_embeddings,user_all_embeddings_cl, item_all_embeddings_cl, image_side_user, text_side_user
         return user_all_embeddings, item_all_embeddings

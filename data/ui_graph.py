@@ -2,34 +2,61 @@ import numpy as np
 from collections import defaultdict
 from data.data import Data
 from data.graph import Graph
+from util.logger import Log
 import scipy.sparse as sp
+import torch
+import torch.nn as nn
+from safetensors import safe_open
+from tqdm import tqdm
 
 
-class Interaction(Data, Graph):
-    def __init__(self, conf, training, test):
+class Interaction(Data, Graph):  #todo Rename to ModelData or ...
+    def __init__(self, conf, training, test, **kwargs):
         Graph.__init__(self)
         Data.__init__(self, conf, training, test)
 
-        self.user = {}  # 用户 -> 用户id
-        self.item = {}  # 物品 -> 物品id
+        self.emb_dim = int(conf['embedding.size'])
+        self.device_id = int(conf['gpu_id'])
+
+        self.user: dict[str, int] = {}  # 用户 -> 用户id
+        self.item: dict[str, int] = {}  # 物品 -> 物品id
         # id映射
-        self.id2user = {}
-        self.id2item = {}
+        self.id2user: dict[int, str] = {}
+        self.id2item: dict[int, str] = {}
         # 数据集(双向嵌套字典)
-        self.training_set_u = defaultdict(dict)
-        self.training_set_i = defaultdict(dict)
+        self.training_set_u: dict[str, dict[str, str]] = defaultdict(dict)
+        self.training_set_i: dict[str, dict[str, str]] = defaultdict(dict)
         self.test_set = defaultdict(dict)
         self.test_set_item = set()
 
         self.__generate_set()
+
         # 用户和项目的数量
         self.user_num = len(self.training_set_u)
         self.item_num = len(self.training_set_i)
+
         # 交互二分图邻接矩阵
         self.ui_adj = self.__create_sparse_bipartite_adjacency()
         self.norm_adj = self.normalize_graph_mat(self.ui_adj)
         # 交互邻接矩阵
         self.interaction_mat = self.__create_sparse_interaction_matrix()
+
+        #* 图像模态数据
+        self.image_embs: dict[str, torch.Tensor] = kwargs.get('image_embs', None)
+        self.image_embs_tensor = self.__create_image_embs_tensor(self.image_embs)
+
+        #* 负样本权重
+        # 1. 计算batch item的总交互数N和当前item在batch data中的交互数d，
+        #   1.1 用d/N*n_negs(防止除0之类的操作)作为该用户的中心度/系数
+        #   1.2 对每个用户，用上面那个值除总和作为系数
+        # 2. 把这个值乘到neg_scores上？
+        self.item_id_centrality = self.__cal_node_centrality(self.training_data)
+
+        #* 文本模态数据
+        item_text_safetensors: safe_open = kwargs.get('item_text', None)
+        user_pref_safetensors: safe_open = kwargs.get('user_pref', None)
+        if item_text_safetensors and user_pref_safetensors:
+            self.item_text_tensor, self.user_pref_tensor = self.__project_text_emb(item_text_safetensors, user_pref_safetensors)
 
 
     def __generate_set(self):
@@ -49,7 +76,7 @@ class Interaction(Data, Graph):
                 self.item[item] = item_id
                 self.id2item[item_id] = item
             # 生成评分记录(嵌套dict)
-            #! 根据库中的yelp数据集，评分全部为1，这是否会有影响？
+            #? 根据库中的yelp数据集，评分全部为1，这是否会有影响？
             # ans: 无影响，因为压根没有用上评分
             self.training_set_u[user][item] = rating
             self.training_set_i[item][user] = rating
@@ -80,14 +107,14 @@ class Interaction(Data, Graph):
             scipy.sparse.csr_matrix: 稀疏的邻接矩阵，形状为(user number + item number, user number + item number)
         """
         # 计算图中节点的总数，包括用户和项目
-        n_nodes = self.user_num + self.item_num  # 69716
+        n_nodes = self.user_num + self.item_num
         # 获取训练数据中用户/项目的id(也即索引)分别作为行/列索引
         # self.training_data -> List[[user, item, float(weight)], [...]]
         # 将用户和项目的索引转换为NumPy数组
-        user_np = np.array([self.user[pair[0]] for pair in self.training_data])  # (1237259,)
-        item_np = np.array([self.item[pair[1]] for pair in self.training_data])  # (1237259,)
+        user_np = np.array([self.user[pair[0]] for pair in self.training_data])  # (user_num)
+        item_np = np.array([self.item[pair[1]] for pair in self.training_data])  # (item_num)
         # 创建一个与用户索引数组相同形状的数组，填充值为1，用于后续创建加权矩阵
-        ratings = np.ones_like(user_np, dtype=np.float32)  # (1237259,)
+        ratings = np.ones_like(user_np, dtype=np.float32)  # (user_num)
         # 创建一个稀疏的CSR格式邻接矩阵，考虑到用户和项目之间的边
         #* (ratings, (user_np, item_np + self.user_num)) 分别作为非零元素值和对应位置
         #* item_np + self.user_num 表示将物品 ID 偏移了 self.user_num，使得物品 ID 与用户 ID 不会重叠
@@ -122,14 +149,87 @@ class Interaction(Data, Graph):
         
         interaction_mat = sp.csr_matrix((entries, (row, col)), shape=(self.user_num, self.item_num), dtype=np.float32)
         return interaction_mat
+    
+
+    def __create_image_embs_tensor(self, image_embs: dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        将图像预处理数据按item编号次序生成 torch.Tensor (item_num, dim)
+        """
+        if image_embs is None:
+            raise ValueError("Data construction error: image_embs is None")
+        
+        image_embs_tensor = torch.cat([image_embs[i].unsqueeze(0) for i in self.item], dim=0)
+        Log.cli('Data', f'📷 item_image_embs: {image_embs_tensor.shape}')
+        return image_embs_tensor
+    
+
+    def __project_text_emb(self, item_text_safetensors: safe_open, user_pref_safetensors: safe_open) -> tuple[torch.Tensor, torch.Tensor]:
+        """投影文本预处理数据
+
+        Args:
+            item_text_safetensors (safe_open): (item_num, 1024)
+            user_pref_safetensors (safe_open): (user_num, 1024)
+
+        Returns:
+            (item_text_tensor, user_pref_tensor) (tuple[torch.Tensor, torch.Tensor]):
+            (item_num, 64), (user_num, 64)
+        """
+        if item_text_safetensors is None or user_pref_safetensors is None:
+            Log.raiseErr('Data', 'Received None for text safetensors')
+        
+        device = torch.device(f"cuda:{self.device_id}" if torch.cuda.is_available() else "cpu")
+        linear_projection = nn.Linear(1024, self.emb_dim, device=device)
+        Log.cli('Data', f'📒 Project text safetensors to {self.emb_dim} on {device}')
+
+        item_text_embs: dict[str, torch.Tensor] = {}
+        user_pref_embs: dict[str, torch.Tensor] = {}
+
+        with item_text_safetensors as f1: # type: ignore
+            for item in tqdm(f1.keys(), desc='item_text'):
+                item_text_embs[item] = linear_projection(f1.get_tensor(item))
+        item_text_tensor = torch.cat([item_text_embs[i].unsqueeze(0) for i in self.item], dim=0)
+        with user_pref_safetensors as f2: # type: ignore
+            for user in tqdm(f2.keys(), desc='user_pref'):
+                user_pref_embs[user] = linear_projection(f2.get_tensor(user))
+        user_pref_tensor = torch.cat([user_pref_embs[j].unsqueeze(0) for j in self.user], dim=0)
+        Log.cli('Data', f'📒 item_text_embs: {item_text_tensor.shape}, user_pref_embs: {user_pref_tensor.shape}')
+
+        return item_text_tensor, user_pref_tensor
+
+    def __cal_node_centrality(self, training_data: list[list[str]]) -> dict[int, float]:
+        """计算item节点中心性
+
+        Args:
+            training_data (list[list[str]]): 训练集
+
+        Returns:
+            item_id_centrality (dict[int, float]): item_id -> centrality
+        """
+        # 统计item交互次数
+        item_count: dict[str, int] = {}
+        for _user, item, _rating in training_data:
+            item_count[item] = item_count.get(item, 0) + 1
+        # 总交互数
+        data_size = len(training_data)
+        # 计算中心性
+        item_centrality: dict[str, float] = {}
+        for item, count in item_count.items():
+            item_centrality[item] = float(count / data_size)
+        # 将item映射到item_id
+        item_id_centrality = {self.item[k]: v for k, v in item_centrality.items()}
+        return item_id_centrality
 
 
+    #* 这两个 oop 就挺离谱的。。。你要么别封装，封装了倒是用啊。。。
+    def get_user_id(self, u: str):
+        uid = self.user.get(u)
+        assert uid is not None, "User ID cannot be None"
+        return uid
 
-    def get_user_id(self, u):
-        return self.user.get(u)
-
-    def get_item_id(self, i):
-        return self.item.get(i)
+    def get_item_id(self, i: str):
+        iid = self.item.get(i)
+        assert iid is not None, "Item ID cannot be None"
+        return iid
 
     def training_size(self):
         """
@@ -152,20 +252,28 @@ class Interaction(Data, Graph):
     def contain_item(self, i):
         return i in self.item
 
-    def user_rated(self, u):
+    def user_rated(self, user: str) -> tuple[list[str], list[str]]:
         """
-        获取用户u的评分信息
+        获取user的交互信息
 
         Args:
-            u: 用户ID，表示我们想要查询评分信息的用户
+            user: 用户
 
         Returns:
-            (list1, list2) (tuple): (用户u评价过的所有物品的ID, 对应物品的评分)
+            [user交互过的所有item], [item评分]
         """
-        return list(self.training_set_u[u].keys()), list(self.training_set_u[u].values())
+        return list(self.training_set_u[user].keys()), list(self.training_set_u[user].values())
 
-    def item_rated(self, i):
-        return list(self.training_set_i[i].keys()), list(self.training_set_i[i].values())
+    def item_rated(self, item: str) -> tuple[list[str], list[str]]:
+        """获取item交互信息
+
+        Args:
+            item (str): 项目
+
+        Returns:
+            [item交互过的所有user], [item评分]
+        """
+        return list(self.training_set_i[item].keys()), list(self.training_set_i[item].values())
 
     def row(self, u):
         k, v = self.user_rated(self.id2user[u])

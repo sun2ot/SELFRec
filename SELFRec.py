@@ -18,6 +18,7 @@ class SELFRec(object):
             self.kwargs['social.data'] = social_data
         # if config.contains('feature.data'):
         #     self.social_data = FileIO.loadFeature(config,self.config['feature.data'])
+        #* 图像模态
         if config.contain('image_modal') and config['image_modal']['fusion']:
             self.kwargs['image_embs'] = FileIO.load_image_data(
                 config['image_modal']['image_set'],
@@ -25,6 +26,16 @@ class SELFRec(object):
                 config['embedding.size'],
                 config['gpu_id']
             )
+        
+        #* 文本模态
+        if config.contain('text_modal') and config['text_modal']['fusion']:
+            self.kwargs['item_text'] = FileIO.load_text_data(config['text_modal']['item_text'], config['gpu_id'])
+            self.kwargs['user_pref'] = FileIO.load_text_data(config['text_modal']['user_pref'], config['gpu_id'])
+        
+        #* 大模型增强
+        if config.contain('llm') and config['llm']['augment']:
+            self.kwargs['llm_config'] = config['llm']
+            print(f"Loading {config['llm']['model']} from {config['llm']['host']}")
 
 
     def execute(self):
