@@ -1,0 +1,8 @@
+User had interacted with the following businesses. Each line is "business_id: categories".
+{history}
+
+Please output a pair of user's favorite and least favorite business_ids from the following candidates(The same format as "business_id: categories"), but not from the user history.
+{candidates}
+
+Output format:
+"favorite business_id,dislike business_id". Please do not output any other things, do not give reasoning.
