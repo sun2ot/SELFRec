@@ -9,4 +9,6 @@ mk_dataset/RAG/
 mk_dataset/log/
 *.safetensors
 
+pth/
+
 .env
