@@ -33,12 +33,13 @@ learning.rate: 0.001
 reg.lambda: 0.0001
 
 XSimGCL:
-  n_layer: 2
-  n_negs: 5
+  n_layer: 3
+  n_negs: 10
   cl_layer: 1
   lambda: 0.2
   eps: 0.2
   tau: 0.15
+  save: True  # 是否保存模型权重(自行添加实现, 这里仅提供逻辑入口)
 
 gpu_id: 1
 
