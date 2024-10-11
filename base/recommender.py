@@ -21,8 +21,8 @@ class Recommender:
         self.output = self.config['output']
 
         # Use f-string for better readability
-        current_time = strftime("%Y-%m-%d %H-%M-%S", localtime(time()))
-        self.model_log = Log(module=self.model_name, filename=f"{self.model_name} {current_time}")
+        self.timestamp = kwargs.get('timestamp')
+        self.model_log = Log(module=self.model_name, filename=f"{self.model_name} {self.timestamp}")
 
         self.result = []
         self.recOutput = []

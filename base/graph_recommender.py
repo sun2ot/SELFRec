@@ -127,7 +127,7 @@ class GraphRecommender(Recommender):
         FileIO.write_file(out_dir, file_name, self.result)
         # CLI 输出评估指标
         print(f'The result of {self.model_name}:\n{"".join(self.result)}')
-        bot.send_text(f'The result of {self.model_name}:\n{"".join(self.result)}')
+        bot.send_text(f'[whr] The result of {self.model_name}:\n{"".join(self.result)}')
 
     def fast_evaluation(self, epoch):
         """
