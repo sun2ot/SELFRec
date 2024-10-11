@@ -2,12 +2,7 @@ import numpy as np
 from collections import defaultdict
 from data.data import Data
 from data.graph import Graph
-from util.logger import Log
 import scipy.sparse as sp
-import torch
-import torch.nn as nn
-from safetensors import safe_open
-from tqdm import tqdm
 
 
 class Interaction(Data, Graph):  #todo Rename to ModelData or ...
@@ -42,8 +37,7 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         self.interaction_mat = self.__create_sparse_interaction_matrix()
 
         #* 图像模态数据
-        self.image_embs: dict[str, torch.Tensor] = kwargs.get('image_embs', None)
-        self.image_embs_tensor = self.__create_image_embs_tensor(self.image_embs)
+        self.image_modal = kwargs.get('image_modal', None)
 
         #* 负样本权重
         # 1. 计算batch item的总交互数N和当前item在batch data中的交互数d，
@@ -53,11 +47,7 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         self.item_id_centrality = self.__cal_node_centrality(self.training_data)
 
         #* 文本模态数据
-        item_text_safetensors: safe_open = kwargs.get('item_text', None)
-        user_pref_safetensors: safe_open = kwargs.get('user_pref', None)
-        if item_text_safetensors and user_pref_safetensors:
-            self.item_text_tensor, self.user_pref_tensor = self.__project_text_emb(item_text_safetensors, user_pref_safetensors)
-
+        self.text_modal = kwargs.get('text_modal', None)
 
     def __generate_set(self):
         """
@@ -149,52 +139,7 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         
         interaction_mat = sp.csr_matrix((entries, (row, col)), shape=(self.user_num, self.item_num), dtype=np.float32)
         return interaction_mat
-    
 
-    def __create_image_embs_tensor(self, image_embs: dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        将图像预处理数据按item编号次序生成 torch.Tensor (item_num, dim)
-        """
-        if image_embs is None:
-            raise ValueError("Data construction error: image_embs is None")
-        
-        image_embs_tensor = torch.cat([image_embs[i].unsqueeze(0) for i in self.item], dim=0)
-        Log.cli('Data', f'📷 item_image_embs: {image_embs_tensor.shape}')
-        return image_embs_tensor
-    
-
-    def __project_text_emb(self, item_text_safetensors: safe_open, user_pref_safetensors: safe_open) -> tuple[torch.Tensor, torch.Tensor]:
-        """投影文本预处理数据
-
-        Args:
-            item_text_safetensors (safe_open): (item_num, 1024)
-            user_pref_safetensors (safe_open): (user_num, 1024)
-
-        Returns:
-            (item_text_tensor, user_pref_tensor) (tuple[torch.Tensor, torch.Tensor]):
-            (item_num, 64), (user_num, 64)
-        """
-        if item_text_safetensors is None or user_pref_safetensors is None:
-            Log.raiseErr('Data', 'Received None for text safetensors')
-        
-        device = torch.device(f"cuda:{self.device_id}" if torch.cuda.is_available() else "cpu")
-        linear_projection = nn.Linear(1024, self.emb_dim, device=device)
-        Log.cli('Data', f'📒 Project text safetensors to {self.emb_dim} on {device}')
-
-        item_text_embs: dict[str, torch.Tensor] = {}
-        user_pref_embs: dict[str, torch.Tensor] = {}
-
-        with item_text_safetensors as f1: # type: ignore
-            for item in tqdm(f1.keys(), desc='item_text'):
-                item_text_embs[item] = linear_projection(f1.get_tensor(item))
-        item_text_tensor = torch.cat([item_text_embs[i].unsqueeze(0) for i in self.item], dim=0)
-        with user_pref_safetensors as f2: # type: ignore
-            for user in tqdm(f2.keys(), desc='user_pref'):
-                user_pref_embs[user] = linear_projection(f2.get_tensor(user))
-        user_pref_tensor = torch.cat([user_pref_embs[j].unsqueeze(0) for j in self.user], dim=0)
-        Log.cli('Data', f'📒 item_text_embs: {item_text_tensor.shape}, user_pref_embs: {user_pref_tensor.shape}')
-
-        return item_text_tensor, user_pref_tensor
 
     def __cal_node_centrality(self, training_data: list[list[str]]) -> dict[int, float]:
         """计算item节点中心性

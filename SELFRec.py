@@ -1,5 +1,5 @@
 from data.loader import FileIO
-
+from time import strftime, localtime, time
 
 class SELFRec(object):
     def __init__(self, config):
@@ -13,6 +13,10 @@ class SELFRec(object):
         self.test_data = FileIO.load_data_set(config['test.set'], config['model']['type'])
 
         self.kwargs = {}
+        # 传入时间戳, 用于文件持久化
+        self.kwargs['timestamp'] = strftime("%Y-%m-%d %H-%M-%S", localtime(time()))
+        self.kwargs['model_name'] = config['model']['name']
+
         if config.contain('social.data'):
             social_data = FileIO.load_social_data(config['social.data'])
             self.kwargs['social.data'] = social_data
@@ -20,23 +24,11 @@ class SELFRec(object):
         #     self.social_data = FileIO.loadFeature(config,self.config['feature.data'])
         #* 图像模态
         if config.contain('image_modal') and config['image_modal']['fusion']:
-            self.kwargs['image_embs'] = FileIO.load_image_data(
-                config['image_modal']['image_set'],
-                config['image_modal']['item2image'],
-                config['embedding.size'],
-                config['gpu_id']
-            )
+            self.kwargs['image_modal'] = config['image_modal']
         
         #* 文本模态
         if config.contain('text_modal') and config['text_modal']['fusion']:
-            self.kwargs['item_text'] = FileIO.load_text_data(config['text_modal']['item_text'], config['gpu_id'])
-            self.kwargs['user_pref'] = FileIO.load_text_data(config['text_modal']['user_pref'], config['gpu_id'])
-        
-        #* 大模型增强
-        if config.contain('llm') and config['llm']['augment']:
-            self.kwargs['llm_config'] = config['llm']
-            print(f"Loading {config['llm']['model']} from {config['llm']['host']}")
-
+            self.kwargs['text_modal'] = config['text_modal']
 
     def execute(self):
         # import the model module
