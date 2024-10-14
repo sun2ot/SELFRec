@@ -1,7 +1,6 @@
 from data.data import Data
 from util.logger import Log
 from os.path import abspath
-from time import strftime, localtime, time
 
 
 class Recommender:
@@ -76,9 +75,15 @@ class Recommender:
         self.print_model_info()
         print('Initializing and building model...')
         self.build()
+
+        print('=' * 80)
         print('Training Model...')
         self.train()
+
+        print('=' * 80)
         print('Testing...')
         rec_list = self.test()
+
+        print('=' * 80)
         print('Evaluating...')
         self.evaluate(rec_list)

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE, bpr_loss_w
+from util.loss_torch import l2_reg_loss, bpr_loss_w, cl_loss
 from util.logger import Log
 from data.ui_graph import Interaction
 from tqdm import tqdm
@@ -13,25 +13,24 @@ import os
 from safetensors import safe_open
 
 #todo 测试 torch.jit 的加速效果
-bpr_loss_script = torch.jit.script(bpr_loss)
+bpr_script = torch.jit.script(bpr_loss_w)
+l2_reg_script = torch.jit.script(l2_reg_loss)
+cl_script = torch.jit.script(cl_loss)
 
 
 class XSimGCL(GraphRecommender):
     def __init__(self, conf, training_set, test_set, **kwargs):
         super(XSimGCL, self).__init__(conf, training_set, test_set, **kwargs)
-        config = self.config['XSimGCL']
-        self.cl_rate = float(config['lambda'])
-        self.eps = float(config['eps'])
-        self.temp = float(config['tau'])
-        self.n_layers = int(config['n_layer'])
-        self.n_negs = int(config['n_negs'])
-        self.cl_layer = int(config['cl_layer'])
-        self.do_save: bool = config['save']
+
+        self.model_config = self.config['XSimGCL']
+        self.n_negs = int(self.model_config['n_negs'])
+        self.temp = float(self.model_config['tau'])
+        self.cl_rate = float(self.model_config['lambda'])
         self.device = torch.device(f"cuda:{int(self.config['gpu_id'])}" if torch.cuda.is_available() else "cpu")
-        Log.cli('Model', f'running on device {self.device}')
-        self.model = XSimGCL_Encoder(self.data,
-                                     self.emb_size, self.eps, self.n_layers, self.cl_layer,
-                                     self.device, self.do_save, **kwargs)
+        self.kwargs = kwargs
+    
+    def build(self):
+        self.model = XSimGCL_Encoder(self.data, self.emb_size, self.model_config, self.device, self.kwargs)
 
     def train(self):
         model = self.model.to(self.device)
@@ -45,15 +44,11 @@ class XSimGCL(GraphRecommender):
                 # 获取推荐子图嵌入和对比学习子图嵌入
                 rec_user_emb, rec_item_emb, \
                 cl_user_emb, cl_item_emb, \
-                fusion_user_embeddings, fusion_item_embeddings, user_pref_tensor = model(perturbed=True)
+                user_pref_tensor = model(perturbed=True)
 
                 # 根据批次数据获取用户的嵌入、正样本嵌入和负样本嵌入
                 #* 这里看似字典形式获取，实则为索引，可参考下文predict()
-                #? neg_ids 为多值时，形状如何？ -> (batch_size, n_negs, dim)
                 user_emb, pos_item_emb, neg_item_embs = rec_user_emb[user_ids], rec_item_emb[pos_ids], rec_item_emb[neg_ids]
-                fusion_user_emb, fusion_item_emb = None, None
-                if fusion_user_embeddings is not None and fusion_item_embeddings is not None:
-                    fusion_user_emb, fusion_item_emb = fusion_user_embeddings[user_ids], fusion_item_embeddings[pos_ids]
 
                 #* 根据 neg_ids 取出对应中心性系数
                 item_id_centrality = self.data.item_id_centrality
@@ -65,7 +60,7 @@ class XSimGCL(GraphRecommender):
                 norm_neg_weights = F.normalize(neg_weights, p=2, dim=1)
                 weight_neg_item_embs: torch.Tensor = norm_neg_weights.unsqueeze(-1) * neg_item_embs  # [batch_size, 2*n_negs, dim]
 
-                # #todo 文本模态引导负样本采样
+                # 文本模态引导负样本采样
                 if self.data.text_modal:
                     # 获取用户偏好
                     user_pref: torch.Tensor = user_pref_tensor[user_ids]  # (batch_siza, dim)
@@ -79,21 +74,18 @@ class XSimGCL(GraphRecommender):
                     weight_neg_item_embs = neg_item_embs[torch.arange(len(neg_ids), device=self.device), lowest_sim_indices]
 
                 # 计算推荐损失
-                rec_loss1 = bpr_loss_w(user_emb, pos_item_emb, weight_neg_item_embs)
-                # rec_loss2 = bpr_loss_w(user_emb, pos_item_emb, neg_item_embs, norm_neg_weights)
+                rec_loss1 = bpr_script(user_emb, pos_item_emb, weight_neg_item_embs) # type: ignore
 
                 # 计算对比学习损失
-                # cl_loss = self.cl_rate * self.cal_cl_loss([user_ids, pos_ids], rec_user_emb, cl_user_emb, rec_item_emb, cl_item_emb)
-                cl_loss = self.cl_rate * self.cal_cl_loss([user_ids, pos_ids], rec_user_emb, cl_user_emb, rec_item_emb, cl_item_emb)
+                user_cl_loss = self.cl_rate * cl_script(user_ids, rec_user_emb, cl_user_emb, self.temp, self.device) # type: ignore
+                item_cl_loss = self.cl_rate * cl_script(pos_ids, rec_item_emb, cl_item_emb, self.temp, self.device) # type: ignore
+                total_cl_loss = user_cl_loss + item_cl_loss
 
                 # 计算批次总损失
-                cross_modal_loss = None
                 if self.data.image_modal or self.data.text_modal:
-                    # 跨模态对比学习损失(注意id的选择与对比视图应对应)
-                    # cross_modal_loss = self.cl_rate * self.cl_loss([user_ids, pos_ids, neg_ids], rec_user_emb, fusion_user_embeddings, rec_item_emb, fusion_item_embeddings)
-                    batch_loss = rec_loss1 + l2_reg_loss(self.reg, user_emb, pos_item_emb, fusion_user_emb, fusion_item_emb) + cl_loss
+                    batch_loss = rec_loss1 + l2_reg_script(self.reg, [user_emb, pos_item_emb], self.device) + total_cl_loss # type: ignore
                 else:
-                    batch_loss = rec_loss1 + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss
+                    batch_loss = rec_loss1 + l2_reg_script(self.reg, [user_emb, pos_item_emb], self.device) + total_cl_loss # type: ignore
 
                 # 梯度清零
                 optimizer.zero_grad()
@@ -106,59 +98,23 @@ class XSimGCL(GraphRecommender):
                     end_batch100_time = time.time()
                     elapsed_time = end_batch100_time - start_batch100_time
                     start_batch100_time = time.time()
-                    if cross_modal_loss:
-                        print(f"epoch: {epoch+1}, batch: {n}, time: {elapsed_time:.4f}s, rec_loss: {rec_loss1.item()}, cl_loss: {cl_loss.item()}, cross_modal_loss: {cross_modal_loss.item()}")
-                    else:
-                        print(f"epoch: {epoch+1}, batch: {n}, time: {elapsed_time:.4f}s, rec_loss: {rec_loss1.item()}, cl_loss: {cl_loss.item()}")
+                    print(f"epoch: {epoch+1}, batch: {n}, time: {elapsed_time:.4f}s, rec_loss: {rec_loss1.item()}, cl_loss: {total_cl_loss.item()}") # type: ignore
                     # print(f"epoch: {epoch+1}, batch: {n}, rec_loss: {rec_loss1.item()}, cl_loss: {cl_loss.item()}")
 
             # epoch结束，验证并更新最佳模型
             with torch.no_grad():
                 self.user_emb, self.item_emb = self.model()
             self.fast_evaluation(epoch)
+        
         # 最终更新用户嵌入和物品嵌入为最佳嵌入
         self.user_emb, self.item_emb = self.best_user_emb, self.best_item_emb
 
-    def cal_cl_loss(self, idx, user_view1, user_view2, item_view1, item_view2):
-        """
-        对比学习损失函数
-        
-        Args:
-            idx (list): [user_idx_list, pos_idx_list]
-            user_view1: rec_user_emb
-            user_view2: cl_user_emb
-            item_view1:rec_item_emb
-            item_view2: cl_item_emb
-        
-        Returns:
-            user_cl_loss + item_cl_loss
-        """
-        # 确定唯一user/item索引 (u_idx ==/!= idx[0])
-        u_idx = torch.unique(torch.tensor(idx[0], dtype=torch.long, device=self.device))
-        i_idx = torch.unique(torch.tensor(idx[1], dtype=torch.long, device=self.device))
-        # 使用InfoNCE损失函数计算user/item的对比损失
-        user_cl_loss = InfoNCE(user_view1[u_idx], user_view2[u_idx], self.temp)
-        item_cl_loss = InfoNCE(item_view1[i_idx], item_view2[i_idx], self.temp)
-        return user_cl_loss + item_cl_loss
-
-
-    def cross_modal_loss(self, idx: list[int], modal_view1: torch.Tensor, modal_view2: torch.Tensor):
-        """(测试)跨模态对比学习损失
-
-        Args:
-            idx (list[int]): 正样本索引
-            modal_view1 (torch.Tensor): 模态1
-            modal_view2 (torch.Tensor): 模态2
-        """
-        idx_tensor = torch.unique(torch.tensor(idx, dtype=torch.long, device=self.device))
-        cl_loss = InfoNCE(modal_view1[idx_tensor], modal_view2[idx_tensor], self.temp)
-        return cl_loss
-
-
     def save(self):
-        with torch.no_grad():
-            out = self.model()
-            self.best_user_emb, self.best_item_emb = out[0], out[1]
+        """保存最佳用户嵌入和物品嵌入"""
+        # with torch.no_grad():
+        #     out = self.model()
+        #     self.best_user_emb, self.best_item_emb = out[0], out[1]
+        self.best_user_emb, self.best_item_emb = self.user_emb, self.item_emb
 
     def predict(self, u):
         """
@@ -186,23 +142,23 @@ class XSimGCL_Encoder(nn.Module):
     """
     XSimGCL 模型本体
     """
-    def __init__(self, data: Interaction, emb_size, eps, n_layers, cl_layer, device: torch.device, do_save: bool, **kwargs):
-        Log.cli('XSimGCL_Encoder', 'init')
+    def __init__(self, data: Interaction, emb_size: int, model_config: dict, device: torch.device, kwargs):
         super(XSimGCL_Encoder, self).__init__()
+
+        self.data = data
+        self.emb_size = emb_size
         self.device = device
-        self.do_save = do_save
         self.model_name = kwargs.get('model_name')
         self.timestamp = kwargs.get('timestamp')
 
-        self.data = data
-        self.eps = eps  # epsilon -> CL Loss 超参数
-        self.emb_size = emb_size
-        self.n_layers = n_layers
-        self.cl_layer = cl_layer
-        self.norm_adj = data.norm_adj
+        self.eps = model_config['eps']
+        self.n_layer = model_config['n_layer']
+        self.cl_layer = model_config['cl_layer']
+
+        self.norm_adj = self.data.norm_adj
         self.param_dict = self._init_model()
         self.image_modal_flag, self.text_modal_flag = False, False
-        self._init_multi_modal(self.do_save)
+        self._init_multi_modal()
         self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj, device=self.device)
 
     def _init_model(self):
@@ -212,7 +168,6 @@ class XSimGCL_Encoder(nn.Module):
         Returns:
             param_dict (nn.ParameterDict): 包含用户和物品嵌入的参数字典，模型的可学习参数
         """
-        #? 这里学习的东西，是用户和项目最终的那个嵌入？还是将他们的编码映射成嵌入张量的参数？
         # 实例化Xavier均匀初始化方法，用于后续的嵌入初始化
         initializer = nn.init.xavier_uniform_
         param_dict = nn.ParameterDict({
@@ -223,17 +178,30 @@ class XSimGCL_Encoder(nn.Module):
         return param_dict
 
 
-    def _init_multi_modal(self, do_save: bool=False):
-        if self.data.image_modal:
+    def _init_multi_modal(self):
+        image_modal = self.data.image_modal
+        text_modal = self.data.text_modal
+
+        if image_modal:
             Log.cli('Model', f'📷 Loading image safetensors to {self.device} and project to {self.emb_size} dimensions')
-            # 定义图像投影层
+            
+            # 图像投影层
             image_projection = nn.Linear(512, self.emb_size, device=self.device)
-            if do_save:
-                os.makedirs(f"pth/{self.model_name}_{self.timestamp}", exist_ok=True)
-                torch.save(image_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/image.pth')
-            origin_image_tensor = torch.empty(size=(self.data.item_num, 512), device=self.device)
+            if image_modal['pre_trained']['enable']:
+                try:
+                    # 加载预训练参数
+                    image_pth = image_modal['pre_trained']['image_pth']
+                    image_projection.load_state_dict(torch.load(image_pth))
+                except Exception as e:
+                    Log.catch(e, 'image_modal', '_init_multi_modal')
+                    exit(-1)
+            else:
+                if image_modal['pre_trained']['save']:
+                    os.makedirs(f"pth/{self.model_name}_{self.timestamp}", exist_ok=True)
+                    torch.save(image_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/image.pth')
             
             # 初始化预训练图像嵌入张量(按照训练集image_id排列)
+            origin_image_tensor = torch.empty(size=(self.data.item_num, 512), device=self.device)
             item2image: dict[str, list[str]] = {}
             with safe_open(self.data.image_modal['image_set'], 'pt', device=f"cuda:{self.device.index}") as image_safetensors: # type: ignore
                 with open(self.data.image_modal['item2image'], 'r') as map_file:
@@ -252,16 +220,26 @@ class XSimGCL_Encoder(nn.Module):
                 self.param_dict['image_embs_tensor'] = image_projection(origin_image_tensor)
                 self.image_modal_flag = True
 
-        if self.data.text_modal:
+        if text_modal:
             Log.cli('Model', f'📒 Loading text safetensors to {self.device} and project to {self.emb_size} dimensions')
-            # 定义文本投影层
+            # 文本投影层
             item_text_projection = nn.Linear(1024, self.emb_size, device=self.device)
             user_pref_projection = nn.Linear(1024, self.emb_size, device=self.device)
-
-            if do_save:
-                os.makedirs(f"pth/{self.model_name}_{self.timestamp}", exist_ok=True)
-                torch.save(item_text_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/item_text.pth')
-                torch.save(user_pref_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/user_pref.pth')
+            if text_modal['pre_trained']['enable']:
+                try:
+                    # 加载预训练参数
+                    item_text_pth = text_modal['pre_trained']['item_text_pth']
+                    user_pref_pth = text_modal['pre_trained']['user_pref_pth']
+                    item_text_projection.load_state_dict(torch.load(item_text_pth))
+                    user_pref_projection.load_state_dict(torch.load(user_pref_pth))
+                except Exception as e:
+                    Log.catch(e, 'text_modal', '_init_multi_modal')
+                    exit(-1)
+            else:
+                if text_modal['pre_trained']['save']:
+                    os.makedirs(f"pth/{self.model_name}_{self.timestamp}", exist_ok=True)
+                    torch.save(item_text_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/item_text.pth')
+                    torch.save(user_pref_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/user_pref.pth')
 
             # 初始化预训练文本嵌入张量(按照训练集item_id排列)
             origin_text_tensor = torch.empty(size=(self.data.item_num, 1024), device=self.device)
@@ -302,11 +280,8 @@ class XSimGCL_Encoder(nn.Module):
         if self.image_modal_flag:
             image_side_embs = torch.cat([self.param_dict['user_emb'], self.param_dict['image_embs_tensor']], 0)
             all_image_embeddings = []
-            for k in range(self.n_layers):
+            for k in range(self.n_layer):
                 image_side_embs = torch.sparse.mm(self.sparse_norm_adj, image_side_embs)
-                # if perturbed:
-                #     random_noise = torch.rand_like(image_side_embs)
-                #     image_side_embs += torch.sign(image_side_embs) * F.normalize(random_noise, dim=-1) * self.eps
                 all_image_embeddings.append(image_side_embs)
 
             final_image_embeddings = torch.mean(torch.stack(all_image_embeddings, dim=1), dim=1)
@@ -317,27 +292,31 @@ class XSimGCL_Encoder(nn.Module):
         if self.text_modal_flag:
             text_side_embs = torch.cat([self.param_dict['user_emb'], self.param_dict['item_text_tensor']], 0)
             all_text_embeddings = []
-            for k in range(self.n_layers):
+            for k in range(self.n_layer):
                 text_side_embs = torch.sparse.mm(self.sparse_norm_adj, text_side_embs)
-                # if perturbed:
-                #     random_noise = torch.rand_like(text_side_embs)
-                #     text_side_embs += torch.sign(text_side_embs) * F.normalize(random_noise, dim=-1) * self.eps
                 all_text_embeddings.append(text_side_embs)
             final_text_embeddings = torch.mean(torch.stack(all_text_embeddings, dim=1), dim=1)
             final_text_embeddings = F.leaky_relu(final_text_embeddings)
             final_text_embeddings = nn.Dropout(p=0.2)(final_text_embeddings)
             final_text_embeddings = F.normalize(final_text_embeddings, p=2)
         
-        # 将用户和物品嵌入拼接在一起，形成初始的嵌入矩阵
-        # (user_num, dim) || (item_num, dim) = (node_num, dim)
-        ego_embeddings = torch.cat([self.param_dict['user_emb'], self.param_dict['item_emb']], 0)
+        #* 模态融合v6: 先处理多模态, 然后融合, 最后加噪对比
+        if final_image_embeddings is not None and final_text_embeddings is not None:  #* 两种模态
+            image_side_user, all_image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
+            text_side_user, all_text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
+            fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], image_side_user, text_side_user], dim=0), dim=0)
+            fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], all_image_embs, all_text_embs], dim=0), dim=0)
+            ego_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
+        else:
+            ego_embeddings = torch.cat([self.param_dict['user_emb'], self.param_dict['item_emb']], 0)
+        
         # 初始化一个列表，用于存储每一层的嵌入向量
         all_embeddings = []
         # 用于存储对比对比学习模块最终层的嵌入向量
         #! 尚未进行CL，只是经过两层LightGCN
         all_embeddings_cl = ego_embeddings
         # 对于每一层进行消息传递和聚合
-        for k in range(self.n_layers):
+        for k in range(self.n_layer):
             # 信息传播: 邻接矩阵 x 嵌入向量 -> torch.Size([node_num, node_num]) x torch.Size([node_num, dim])
             ego_embeddings = torch.sparse.mm(self.sparse_norm_adj, ego_embeddings)
             if perturbed:
@@ -361,32 +340,6 @@ class XSimGCL_Encoder(nn.Module):
         user_all_embeddings, item_all_embeddings = torch.split(final_embeddings, [self.data.user_num, self.data.item_num])
         user_all_embeddings_cl, item_all_embeddings_cl = torch.split(all_embeddings_cl, [self.data.user_num, self.data.item_num])
         
-        # 模态融合v4/5: 拼接均值(取消原始嵌入融合, 单独构建多模态)
-        fusion_user_embeddings, fusion_item_embeddings = None, None
-        if final_image_embeddings is not None and final_text_embeddings is not None:  #* 两种模态
-            image_side_user, all_image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
-            text_side_user, all_text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
-            # fusion_user_embeddings = torch.mean(torch.stack([user_all_embeddings, image_side_user, text_side_user], dim=0), dim=0)
-            # fusion_item_embeddings = torch.mean(torch.stack([item_all_embeddings, all_image_embs, all_text_embs], dim=0), dim=0)
-            fusion_user_embeddings = torch.mean(torch.stack([image_side_user, text_side_user], dim=0), dim=0)
-            fusion_item_embeddings = torch.mean(torch.stack([all_image_embs, all_text_embs], dim=0), dim=0)
-        elif final_image_embeddings is not None:  #* 图片模态
-            image_side_user, all_image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
-            # fusion_user_embeddings = torch.mean(torch.stack([user_all_embeddings, image_side_user], dim=0), dim=0)
-            # fusion_item_embeddings = torch.mean(torch.stack([item_all_embeddings, all_image_embs], dim=0), dim=0)
-            fusion_user_embeddings = image_side_user
-            fusion_item_embeddings = all_image_embs
-        elif final_text_embeddings is not None:  #* 文本模态
-            text_side_user, all_text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
-            # fusion_user_embeddings = torch.mean(torch.stack([user_all_embeddings, text_side_user], dim=0), dim=0)
-            # fusion_item_embeddings = torch.mean(torch.stack([item_all_embeddings, all_text_embs], dim=0), dim=0)
-            fusion_user_embeddings = text_side_user
-            fusion_item_embeddings = all_text_embs
-
-        # else:
-        #     Log.cli('Forward', 'No fusion embeddings.')
-        
         if perturbed:
-            # return user_all_embeddings, item_all_embeddings,user_all_embeddings_cl, item_all_embeddings_cl
-            return user_all_embeddings, item_all_embeddings,user_all_embeddings_cl, item_all_embeddings_cl, fusion_user_embeddings, fusion_item_embeddings, user_pref_tensor
+            return user_all_embeddings, item_all_embeddings,user_all_embeddings_cl, item_all_embeddings_cl, user_pref_tensor
         return user_all_embeddings, item_all_embeddings

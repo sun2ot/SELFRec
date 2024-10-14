@@ -26,7 +26,7 @@ def bpr_loss(user_emb, pos_item_emb, neg_item_embs):
     return torch.mean(loss)
 
 
-def bpr_loss_w(user_emb, pos_item_emb, neg_item_embs, neg_weights = None):
+def bpr_loss_w(user_emb, pos_item_emb, neg_item_embs):
     """
     Bayesian Personalized Ranking (BPR) 损失函数
     fix:
@@ -45,18 +45,10 @@ def bpr_loss_w(user_emb, pos_item_emb, neg_item_embs, neg_weights = None):
     # 计算用户对正样本的偏好分数
     # torch.mul is element-wise multiplies
     pos_score = torch.mul(user_emb, pos_item_emb).sum(dim=1)  # [batch_size]
-
     # 计算用户对负样本的偏好分数
-    # neg_score = torch.mul(user_emb, neg_item_embs).sum(dim=1)
-    if neg_weights:
-        neg_scores = neg_weights * torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)  # [batch_size, n_negs]
-    else:
-        neg_scores = torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)
-
+    neg_scores = torch.mul(user_emb.unsqueeze(1), neg_item_embs).sum(dim=2)
     # BPR Loss
-    # loss = -torch.log(10e-6 + torch.sigmoid(pos_score - neg_score))
     loss = -torch.log(10e-6 + torch.sigmoid(pos_score.unsqueeze(1) - neg_scores))  # [batch_size, n_negs]
-
     # 返回损失的均值
     return torch.mean(loss)
 
@@ -66,26 +58,24 @@ def triplet_loss(user_emb, pos_item_emb, neg_item_emb):
     loss = F.relu(pos_score-neg_score+0.5)
     return torch.mean(loss)
 
-def l2_reg_loss(reg, *args) -> torch.Tensor:
+def l2_reg_loss(reg: float, embeddings: list[torch.Tensor], device: torch.device) -> torch.Tensor:
     """
     计算L2正则化损失
 
     Args:
         reg (float): 正则化系数
-        *args (torch.Tensor): 需要进行正则化的张量列表
+        embeddings (List[torch.Tensor]): 需要进行正则化的张量列表
     
     Returns:
         正则化损失的平均值，标量张量
     """
     # 初始化嵌入损失为0
-    emb_loss = 0
+    emb_loss = torch.tensor(0., device=device)
     # 遍历传入的每一个嵌入向量
-    for emb in args:
+    for emb in embeddings:
         # 计算每一个嵌入向量的L2范数，然后除以batch_size以减少其对损失函数的影响
         # 累加到总的嵌入损失中
-        #! torch.norm is deprecated
-        #todo Use torch.linalg.vector_norm() or torch.linalg.matrix_norm()
-        emb_loss += torch.norm(emb, p=2)/emb.shape[0]
+        emb_loss += torch.linalg.vector_norm(emb, ord=2) / emb.shape[0]
     return emb_loss * reg
 
 
@@ -122,6 +112,23 @@ def InfoNCE(view1, view2, temperature: float, b_cos: bool = True):
     # 计算每个样本的分数
     score = torch.diag(F.log_softmax(pos_score, dim=1))
     return -score.mean()
+
+
+def cl_loss(idx: list[int], view1, view2, temp: float, device: torch.device) -> torch.Tensor:
+    """
+    对比学习损失函数
+    
+    Args:
+        idx (list): [user_idx_list, pos_idx_list]
+        view1: 对比视图1
+        view2: 对比视图2
+    
+    Returns:
+        cl_loss
+    """
+    idx_tensor = torch.unique(torch.tensor(idx, dtype=torch.long, device=device))
+    loss = InfoNCE(view1[idx_tensor], view2[idx_tensor], temp)
+    return loss
 
 
 #this version is from recbole

@@ -10,9 +10,6 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         Graph.__init__(self)
         Data.__init__(self, conf, training, test)
 
-        self.emb_dim = int(conf['embedding.size'])
-        self.device_id = int(conf['gpu_id'])
-
         self.user: dict[str, int] = {}  # 用户 -> 用户id
         self.item: dict[str, int] = {}  # 物品 -> 物品id
         # id映射

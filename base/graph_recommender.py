@@ -24,7 +24,7 @@ class GraphRecommender(Recommender):
         self.max_N = max(self.topN)
 
     def print_model_info(self):
-        """重写父类方法输出模型配置及数据集统计信息"""
+        """重写父类方法输出数据集统计信息"""
         super().print_model_info()
         # print dataset statistics
         print(f'Training Set Size: (user number: {self.data.training_size()[0]}, '
@@ -36,10 +36,10 @@ class GraphRecommender(Recommender):
         print('=' * 80)
 
     def build(self):
-        pass
+        raise NotImplementedError
 
     def train(self):
-        pass
+        raise NotImplementedError
 
     def predict(self, u):
         raise NotImplementedError
@@ -139,23 +139,19 @@ class GraphRecommender(Recommender):
         print('Evaluating the model...')
         rec_list = self.test()
         measure = ranking_evaluation(self.data.test_set, rec_list, [self.max_N])
-
+        # 从1开始, 0是标题
         performance = {k: float(v) for m in measure[1:] for k, v in [m.strip().split(':')]}
 
-        if self.bestPerformance:
-            count = sum(1 if self.bestPerformance[1][k] > performance[k] else -1 for k in performance)
         # 如果存在之前的最佳性能记录
         if len(self.bestPerformance) > 0:
             count = 0
             performance = {}
             # 解析当前性能指标，存储到performance字典中
-            #? measure[0]为日志，但是top-N值有两个，也就是说后面应该还有一个日志记录，如何处理的
             for m in measure[1:]:
                 k, v = m.strip().split(':')
                 performance[k] = float(v)
             # 比较当前性能和最佳性能，更新count值
             for k in self.bestPerformance[1]:
-                # 如果当前性能指标小于最佳性能指标(损失函数值越小越好)，则count-1
                 if self.bestPerformance[1][k] > performance[k]:
                     count += 1
                 else:
@@ -163,17 +159,10 @@ class GraphRecommender(Recommender):
             # 通过count值粗略判断是否整体更优(即多数指标更优)
             if count < 0:
                 self.bestPerformance = [epoch + 1, performance]
-                #? 继承自父类的save函数是干嘛的
                 self.save()
         else:
-            self.bestPerformance = [epoch + 1, performance]
             # 不存在历史最佳性能记录，则直接保存
-            self.bestPerformance.append(epoch + 1)
-            performance = {}
-            for m in measure[1:]:
-                k, v = m.strip().split(':')
-                performance[k] = float(v)
-            self.bestPerformance.append(performance)
+            self.bestPerformance = [epoch + 1, performance]
             self.save()
 
         print('-' * 80)
