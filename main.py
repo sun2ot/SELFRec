@@ -2,6 +2,12 @@ from SELFRec import SELFRec
 from util.conf import ModelConf
 from util.logger import Log
 import time
+import argparse
+
+# 因为实验环境一些令人无语的历史原因, 这里添加一个配置文件的覆盖接口
+parser = argparse.ArgumentParser(description="Used to replace the configuration file path.")
+parser.add_argument('--config', '-c', type=str, default=None, help='Path to the configuration file.')
+args = parser.parse_args()
 
 def print_models(title, models):
     print(f"{'=' * 80}\n{title}\n{'-' * 80}")
@@ -26,7 +32,10 @@ if __name__ == '__main__':
     s = time.time()
     all_models = sum(models.values(), [])
     if model in all_models:
-        conf = ModelConf(f'./conf/{model}.yaml')
+        if args.config is not None:
+            conf = ModelConf(args.config)
+        else:
+            conf = ModelConf(f'./conf/{model}.yaml')
         rec = SELFRec(conf)
         rec.execute()
         e = time.time()

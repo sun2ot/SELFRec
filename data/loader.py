@@ -20,7 +20,7 @@ class FileIO(object):
         """
         if not os.path.exists(dir):
             os.makedirs(dir)
-        with open(dir + file, op) as f:
+        with open(f"{dir}/{file}", op) as f:
             f.writelines(content)
 
     @staticmethod

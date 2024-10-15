@@ -8,6 +8,7 @@ image_modal:
   pre_trained:
     enable: True  # 是否加载预训练权重
     save: True  # 是否保存投影层 (enable=False 生效)
+    save_path: pth
     image_pth: pth/XSimGCL_2024-10-11 21-19-19/image.pth
 
 text_modal:
@@ -17,6 +18,7 @@ text_modal:
   pre_trained:
     enable: True
     save: True
+    save_path: pth
     item_text_pth: pth/XSimGCL_2024-10-11 21-19-19/item_text.pth
     user_pref_pth: pth/XSimGCL_2024-10-11 21-19-19/user_pref.pth
 
@@ -51,4 +53,4 @@ XSimGCL:
 
 gpu_id: 1 
 
-output: ./results/
+output: results  # top-N ranking and evaluation result

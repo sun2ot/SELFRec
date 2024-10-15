@@ -197,8 +197,9 @@ class XSimGCL_Encoder(nn.Module):
                     exit(-1)
             else:
                 if image_modal['pre_trained']['save']:
-                    os.makedirs(f"pth/{self.model_name}_{self.timestamp}", exist_ok=True)
-                    torch.save(image_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/image.pth')
+                    path = image_modal['pre_trained']['save_path']
+                    os.makedirs(f"{path}/{self.model_name}_{self.timestamp}", exist_ok=True)
+                    torch.save(image_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/image.pth')
             
             # 初始化预训练图像嵌入张量(按照训练集image_id排列)
             origin_image_tensor = torch.empty(size=(self.data.item_num, 512), device=self.device)
@@ -237,9 +238,10 @@ class XSimGCL_Encoder(nn.Module):
                     exit(-1)
             else:
                 if text_modal['pre_trained']['save']:
-                    os.makedirs(f"pth/{self.model_name}_{self.timestamp}", exist_ok=True)
-                    torch.save(item_text_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/item_text.pth')
-                    torch.save(user_pref_projection.state_dict(), f'pth/{self.model_name}_{self.timestamp}/user_pref.pth')
+                    path = image_modal['pre_trained']['save_path']
+                    os.makedirs(f"{path}/{self.model_name}_{self.timestamp}", exist_ok=True)
+                    torch.save(item_text_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/item_text.pth')
+                    torch.save(user_pref_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/user_pref.pth')
 
             # 初始化预训练文本嵌入张量(按照训练集item_id排列)
             origin_text_tensor = torch.empty(size=(self.data.item_num, 1024), device=self.device)
