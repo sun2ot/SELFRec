@@ -29,6 +29,10 @@ class SELFRec(object):
         #* 文本模态
         if config.contain('text_modal') and config['text_modal']['fusion']:
             self.kwargs['text_modal'] = config['text_modal']
+        
+        #* 用户偏好
+        if config.contain('user_pref') and config['user_pref']['fusion']:
+            self.kwargs['user_pref'] = config['user_pref']
 
     def execute(self):
         # import the model module

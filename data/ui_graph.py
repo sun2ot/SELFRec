@@ -46,6 +46,9 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         #* 文本模态数据
         self.text_modal = kwargs.get('text_modal', None)
 
+        #* 用户偏好
+        self.user_pref = kwargs.get('user_pref', None)
+
     def __generate_set(self):
         """
         生成用户、物品和评分的集合
