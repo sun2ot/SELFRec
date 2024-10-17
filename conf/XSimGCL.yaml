@@ -6,7 +6,7 @@ image_modal:
   image_set: ./mk_dataset/yelp_out/photo_embs.safetensors
   item2image: ./mk_dataset/yelp_out/re_item2photos.txt
   pre_trained:
-    enable: True  # 是否加载预训练权重
+    enable: False  # 是否加载预训练权重
     save: True  # 是否保存投影层 (enable=False 生效)
     save_path: pth
     image_pth: pth/XSimGCL_2024-10-11 21-19-19/image.pth
@@ -14,13 +14,21 @@ image_modal:
 text_modal:
   fusion: True
   item_text: ./mk_dataset/yelp_out/item_text_embs.safetensors
-  user_pref: ./mk_dataset/yelp_out/user_pre_embs.safetensors
   pre_trained:
-    enable: True
+    enable: False
     save: True
     save_path: pth
     item_text_pth: pth/XSimGCL_2024-10-11 21-19-19/item_text.pth
+
+user_pref:
+  fusion: True
+  pref_embs: ./mk_dataset/yelp_out/user_pre_embs.safetensors
+  pre_trained:
+    enable: False
+    save: True
+    save_path: pth
     user_pref_pth: pth/XSimGCL_2024-10-11 21-19-19/user_pref.pth
+
 
 llm:
   augment: False
@@ -38,7 +46,7 @@ model:
 
 item.ranking.topN: [20]
 embedding.size: 64
-max.epoch: 20
+max.epoch: 500
 batch.size: 2048
 learning.rate: 0.001
 reg.lambda: 0.0001
@@ -49,8 +57,8 @@ XSimGCL:
   cl_layer: 1
   lambda: 0.2
   eps: 0.2
-  tau: 0.15
+  tau: 0.15 
 
-gpu_id: 1 
+gpu_id: 1
 
 output: results  # top-N ranking and evaluation result

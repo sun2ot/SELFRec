@@ -1,6 +1,7 @@
 from data.data import Data
 from util.logger import Log
 from os.path import abspath
+import time
 
 
 class Recommender:
@@ -21,6 +22,7 @@ class Recommender:
 
         # Use f-string for better readability
         self.timestamp = kwargs.get('timestamp')
+        self.start_time = time.time()
         self.model_log = Log(module=self.model_name, filename=f"{self.model_name} {self.timestamp}")
 
         self.result = []

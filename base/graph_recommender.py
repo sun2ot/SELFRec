@@ -19,6 +19,7 @@ class GraphRecommender(Recommender):
     def __init__(self, conf, training_set, test_set, **kwargs):
         super().__init__(conf, training_set, test_set, **kwargs)
         self.data = Interaction(conf, training_set, test_set, **kwargs)
+        self.early_stop = 0
         self.bestPerformance = []  # [epoch, performance{recall:0.0, precision:0.0, ...}]
         self.topN = [int(num) for num in self.ranking]  # 10, 20
         self.max_N = max(self.topN)
@@ -125,9 +126,12 @@ class GraphRecommender(Recommender):
             result_format_str += r
         self.model_log.add(result_format_str)
         FileIO.write_file(out_dir, file_name, self.result)
+        end_time = time()
+        train_time = end_time - self.start_time
         # CLI 输出评估指标
-        print(f'The result of {self.model_name}:\n{"".join(self.result)}')
-        bot.send_text(f'[whr] The result of {self.model_name}:\n{"".join(self.result)}')
+        print(f"\nThe result of {self.model_name}:\n{''.join(self.result)}\nRun time: {train_time:.2f}s")
+        self.model_log.add(f"Run time: {train_time:.2f}s")
+        bot.send_text(f'[whr] The result of {self.model_name}:\n{"".join(self.result)}\nRun time: {train_time:.2f}s')
 
     def fast_evaluation(self, epoch):
         """
@@ -158,8 +162,11 @@ class GraphRecommender(Recommender):
                     count -= 1
             # 通过count值粗略判断是否整体更优(即多数指标更优)
             if count < 0:
+                self.early_stop = 0  # 重新置为0
                 self.bestPerformance = [epoch + 1, performance]
                 self.save()
+            else:
+                self.early_stop += 1  # 性能未更新+1
         else:
             # 不存在历史最佳性能记录，则直接保存
             self.bestPerformance = [epoch + 1, performance]
