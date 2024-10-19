@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
@@ -215,7 +216,7 @@ class XSimGCL_Encoder(nn.Module):
             Log.cli('Model', f'📷 Loading image safetensors to {self.device} and project to {self.emb_size} dimensions')
             
             # 图像投影层
-            image_projection = nn.Linear(512, self.emb_size, device=self.device)
+            image_projection = nn.Linear(int(image_modal['dim']), self.emb_size, device=self.device)
             if image_modal['pre_trained']['enable']:
                 try:
                     # 加载预训练参数
@@ -232,28 +233,33 @@ class XSimGCL_Encoder(nn.Module):
             
             # 初始化预训练图像嵌入张量(按照训练集image_id排列)
             origin_image_tensor = torch.empty(size=(self.data.item_num, 512), device=self.device)
-            item2image: dict[str, list[str]] = {}
-            with safe_open(self.data.image_modal['image_set'], 'pt', device=f"cuda:{self.device.index}") as image_safetensors: # type: ignore
-                with open(self.data.image_modal['item2image'], 'r') as map_file:
-                    for line in map_file:
-                        item = line.strip().split(' ')[0]
-                        images = line.strip().split(' ')[1:]
-                        item2image[item] = images
-                for idx, item in tqdm(enumerate(self.data.item), desc='item images'):
-                    try:
-                        origin_image_tensor[idx] = torch.mean(
-                            torch.stack([image_safetensors.get_tensor(image) for image in item2image[item]]), dim=0
-                        )
-                    except Exception as e:
-                        Log.catch(e, item, 'item2photo emb project')
-                        exit(-1)
+
+            if str(self.data.image_modal['image_set']).endswith('npy'):
+                origin_image_np = np.load(self.data.image_modal['image_set'])
+                origin_image_tensor = torch.from_numpy(origin_image_np).to(self.device, dtype=torch.float32)
+            else:
+                item2image: dict[str, list[str]] = {}
+                with safe_open(self.data.image_modal['image_set'], 'pt', device=f"cuda:{self.device.index}") as image_safetensors: # type: ignore
+                    with open(self.data.image_modal['item2image'], 'r') as map_file:
+                        for line in map_file:
+                            item = line.strip().split(' ')[0]
+                            images = line.strip().split(' ')[1:]
+                            item2image[item] = images
+                    for idx, item in tqdm(enumerate(self.data.item), desc='item images'):
+                        try:
+                            origin_image_tensor[idx] = torch.mean(
+                                torch.stack([image_safetensors.get_tensor(image) for image in item2image[item]]), dim=0
+                            )
+                        except Exception as e:
+                            Log.catch(e, item, 'item2photo emb project')
+                            exit(-1)
                 self.param_dict['image_embs_tensor'] = image_projection(origin_image_tensor)
                 self.image_modal_flag = True
 
         if text_modal:
             Log.cli('Model', f'📒 Loading text safetensors to {self.device} and project to {self.emb_size} dimensions')
             # 文本投影层
-            item_text_projection = nn.Linear(1024, self.emb_size, device=self.device)
+            item_text_projection = nn.Linear(int(text_modal['dim']), self.emb_size, device=self.device)
             if text_modal['pre_trained']['enable']:
                 try:
                     # 加载预训练参数
@@ -271,9 +277,13 @@ class XSimGCL_Encoder(nn.Module):
             # 初始化预训练文本嵌入张量(按照训练集item_id排列)
             origin_text_tensor = torch.empty(size=(self.data.item_num, 1024), device=self.device)
 
-            with safe_open(self.data.text_modal['item_text'], 'pt', device=f"cuda:{self.device.index}") as f1: # type: ignore
-                for idx, item in tqdm(enumerate(self.data.item), desc='item text'):
-                    origin_text_tensor[idx] = f1.get_tensor(item)
+            if str(self.data.text_modal['item_text']).endswith('npy'):
+                origin_text_np = np.load(self.data.text_modal['item_text'])
+                origin_text_tensor = torch.from_numpy(origin_text_np).to(self.device, dtype=torch.float32)
+            else:
+                with safe_open(self.data.text_modal['item_text'], 'pt', device=f"cuda:{self.device.index}") as f1: # type: ignore
+                    for idx, item in tqdm(enumerate(self.data.item), desc='item text'):
+                        origin_text_tensor[idx] = f1.get_tensor(item)
             
             self.param_dict['item_text_tensor'] = item_text_projection(origin_text_tensor)
             self.text_modal_flag = True

@@ -3,7 +3,8 @@ test.set: ./mk_dataset/yelp_ds_final/test_data.txt
 
 image_modal:
   fusion: True
-  image_set: ./mk_dataset/yelp_out/photo_embs.safetensors
+  dim: 128  # 图像模态原始嵌入维度
+  image_set: /home/yzh/code/SELFRec/mk_dataset/tiktok_out/image_feat.npy
   item2image: ./mk_dataset/yelp_out/re_item2photos.txt
   pre_trained:
     enable: False  # 是否加载预训练权重
@@ -13,7 +14,8 @@ image_modal:
 
 text_modal:
   fusion: True
-  item_text: ./mk_dataset/yelp_out/item_text_embs.safetensors
+  dim: 768  # 文本模态原始嵌入维度
+  item_text: /home/yzh/code/SELFRec/mk_dataset/tiktok_out/text_feat.npy
   pre_trained:
     enable: False
     save: True
@@ -21,7 +23,8 @@ text_modal:
     item_text_pth: pth/XSimGCL_2024-10-11 21-19-19/item_text.pth
 
 user_pref:
-  fusion: True
+  fusion: False
+  dim: 768
   pref_embs: ./mk_dataset/yelp_out/user_pre_embs.safetensors
   pre_trained:
     enable: False
