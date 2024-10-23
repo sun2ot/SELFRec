@@ -1,0 +1,7 @@
+User had interacted with the following businesses. Each line is "business_id: categories". Please summarize this user preference categories with historical information. Give answers directly. Do not output any other things. Do not give reasoning.
+
+[history]
+{history}
+
+[output format]
+categorie1, categorie2, ...
