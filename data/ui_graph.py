@@ -28,10 +28,10 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         self.item_num = len(self.training_set_i)
 
         # 交互二分图邻接矩阵
-        self.ui_adj = self.__create_sparse_bipartite_adjacency()
-        self.norm_adj = self.normalize_graph_mat(self.ui_adj)
+        self.ui_adj = self.__create_sparse_bipartite_adjacency()  # (node_num, node_num)
+        self.norm_adj = self.normalize_graph_mat(self.ui_adj)  # (node_num, node_num)
         # 交互邻接矩阵
-        self.interaction_mat = self.__create_sparse_interaction_matrix()
+        self.interaction_mat = self.__create_sparse_interaction_matrix()  # (user_num, item_num)
 
         #* 图像模态数据
         self.image_modal = kwargs.get('image_modal', None)

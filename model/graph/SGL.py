@@ -4,36 +4,39 @@ import torch.nn.functional as F
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE
+from util.loss_torch import l2_reg_loss, InfoNCE, bpr_loss_w
 from data.augmentor import GraphAugmentor
 
 # Paper: self-supervised graph learning for recommendation. SIGIR'21
 
 
 class SGL(GraphRecommender):
-    def __init__(self, conf, training_set, test_set):
-        super(SGL, self).__init__(conf, training_set, test_set)
+    def __init__(self, conf, training_set, test_set, **kwargs):
+        super(SGL, self).__init__(conf, training_set, test_set, **kwargs)
         args = self.config['SGL']
         self.cl_rate = float(args['lambda'])
-        aug_type = self.aug_type = int(args['aug_type'])
-        drop_rate = float(args['drop_rate'])
-        n_layers = int(args['n_layer'])
-        temp = float(args['temp'])
-        self.model = SGL_Encoder(self.data, self.emb_size, drop_rate, n_layers, temp, aug_type)
-
+        self.aug_type = int(args['aug_type'])
+        self.drop_rate = float(args['drop_rate'])
+        self.n_layers = int(args['n_layer'])
+        self.temp = float(args['temp'])
+        self.device = torch.device(f"cuda:{int(self.config['gpu_id'])}" if torch.cuda.is_available() else "cpu")
+        
+    def build(self):
+        self.model = SGL_Encoder(self.data, self.emb_size, self.drop_rate, self.n_layers, self.temp, self.aug_type, self.device)
+    
     def train(self):
-        model = self.model.cuda()
+        model = self.model.cuda(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lRate)
         for epoch in range(self.maxEpoch):
             dropped_adj1 = model.graph_reconstruction()
             dropped_adj2 = model.graph_reconstruction()
-            for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
+            for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size, 1)):
                 user_idx, pos_idx, neg_idx = batch
                 rec_user_emb, rec_item_emb = model()
                 user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
-                rec_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb)
+                rec_loss = bpr_loss_w(user_emb, pos_item_emb, neg_item_emb)
                 cl_loss = self.cl_rate * model.cal_cl_loss([user_idx,pos_idx],dropped_adj1,dropped_adj2)
-                batch_loss =  rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb,neg_item_emb) + cl_loss
+                batch_loss =  rec_loss + l2_reg_loss(self.reg, [user_emb, pos_item_emb,neg_item_emb], self.device) + cl_loss
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -57,8 +60,9 @@ class SGL(GraphRecommender):
 
 
 class SGL_Encoder(nn.Module):
-    def __init__(self, data, emb_size, drop_rate, n_layers, temp, aug_type):
+    def __init__(self, data, emb_size, drop_rate, n_layers, temp, aug_type, device):
         super(SGL_Encoder, self).__init__()
+        self.device = device
         self.data = data
         self.drop_rate = drop_rate
         self.emb_size = emb_size
@@ -67,13 +71,13 @@ class SGL_Encoder(nn.Module):
         self.aug_type = aug_type
         self.norm_adj = data.norm_adj
         self.embedding_dict = self._init_model()
-        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda()
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj, self.device)
 
     def _init_model(self):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=self.device))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=self.device))),
         })
         return embedding_dict
 
@@ -93,7 +97,7 @@ class SGL_Encoder(nn.Module):
         elif self.aug_type == 1 or self.aug_type == 2:
             dropped_mat = GraphAugmentor.edge_dropout(self.data.interaction_mat, self.drop_rate)
         dropped_mat = self.data.convert_to_laplacian_mat(dropped_mat)
-        return TorchGraphInterface.convert_sparse_mat_to_tensor(dropped_mat).cuda()
+        return TorchGraphInterface.convert_sparse_mat_to_tensor(dropped_mat, self.device)
 
     def forward(self, perturbed_adj=None):
         ego_embeddings = torch.cat([self.embedding_dict['user_emb'], self.embedding_dict['item_emb']], 0)
@@ -113,8 +117,8 @@ class SGL_Encoder(nn.Module):
         return user_all_embeddings, item_all_embeddings
 
     def cal_cl_loss(self, idx, perturbed_mat1, perturbed_mat2):
-        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda()
-        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda()
+        u_idx = torch.unique(torch.tensor(idx[0], dtype=torch.long, device=self.device))
+        i_idx = torch.unique(torch.tensor(idx[1], dtype=torch.long, device=self.device))
         user_view_1, item_view_1 = self.forward(perturbed_mat1)
         user_view_2, item_view_2 = self.forward(perturbed_mat2)
         view1 = torch.cat((user_view_1[u_idx],item_view_1[i_idx]),0)

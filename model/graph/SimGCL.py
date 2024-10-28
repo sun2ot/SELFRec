@@ -4,31 +4,34 @@ import torch.nn.functional as F
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE
+from util.loss_torch import bpr_loss_w, l2_reg_loss, InfoNCE
 
 # Paper: Are graph augmentations necessary? simple graph contrastive learning for recommendation. SIGIR'22
 
 
 class SimGCL(GraphRecommender):
-    def __init__(self, conf, training_set, test_set):
-        super(SimGCL, self).__init__(conf, training_set, test_set)
+    def __init__(self, conf, training_set, test_set, **kwargs):
+        super(SimGCL, self).__init__(conf, training_set, test_set, **kwargs)
         args = self.config['SimGCL']
         self.cl_rate = float(args['lambda'])
         self.eps = float(args['eps'])
         self.n_layers = int(args['n_layer'])
-        self.model = SimGCL_Encoder(self.data, self.emb_size, self.eps, self.n_layers)
+        self.device = torch.device(f"cuda:{int(self.config['gpu_id'])}" if torch.cuda.is_available() else "cpu")
+        
+    def build(self):
+        self.model = SimGCL_Encoder(self.data, self.emb_size, self.eps, self.n_layers, self.device)
 
     def train(self):
-        model = self.model.cuda()
+        model = self.model.cuda(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lRate)
         for epoch in range(self.maxEpoch):
-            for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
+            for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size,1)):
                 user_idx, pos_idx, neg_idx = batch
                 rec_user_emb, rec_item_emb = model()
                 user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
-                rec_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb)
+                rec_loss = bpr_loss_w(user_emb, pos_item_emb, neg_item_emb)
                 cl_loss = self.cl_rate * self.cal_cl_loss([user_idx,pos_idx])
-                batch_loss =  rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb) + cl_loss
+                batch_loss =  rec_loss + l2_reg_loss(self.reg, [user_emb, pos_item_emb], self.device) + cl_loss
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -41,8 +44,8 @@ class SimGCL(GraphRecommender):
         self.user_emb, self.item_emb = self.best_user_emb, self.best_item_emb
 
     def cal_cl_loss(self, idx):
-        u_idx = torch.unique(torch.Tensor(idx[0]).type(torch.long)).cuda()
-        i_idx = torch.unique(torch.Tensor(idx[1]).type(torch.long)).cuda()
+        u_idx = torch.unique(torch.tensor(idx[0], dtype=torch.long, device=self.device))
+        i_idx = torch.unique(torch.tensor(idx[1], dtype=torch.long, device=self.device))
         user_view_1, item_view_1 = self.model(perturbed=True)
         user_view_2, item_view_2 = self.model(perturbed=True)
         user_cl_loss = InfoNCE(user_view_1[u_idx], user_view_2[u_idx], 0.2)
@@ -60,21 +63,22 @@ class SimGCL(GraphRecommender):
 
 
 class SimGCL_Encoder(nn.Module):
-    def __init__(self, data, emb_size, eps, n_layers):
+    def __init__(self, data, emb_size, eps, n_layers, device):
         super(SimGCL_Encoder, self).__init__()
+        self.device = device
         self.data = data
         self.eps = eps
         self.emb_size = emb_size
         self.n_layers = n_layers
         self.norm_adj = data.norm_adj
         self.embedding_dict = self._init_model()
-        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda()
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj, self.device)
 
     def _init_model(self):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=self.device))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=self.device))),
         })
         return embedding_dict
 
@@ -84,7 +88,7 @@ class SimGCL_Encoder(nn.Module):
         for k in range(self.n_layers):
             ego_embeddings = torch.sparse.mm(self.sparse_norm_adj, ego_embeddings)
             if perturbed:
-                random_noise = torch.rand_like(ego_embeddings).cuda()
+                random_noise = torch.rand_like(ego_embeddings, device=self.device)
                 ego_embeddings += torch.sign(ego_embeddings) * F.normalize(random_noise, dim=-1) * self.eps
             all_embeddings.append(ego_embeddings)
         all_embeddings = torch.stack(all_embeddings, dim=1)

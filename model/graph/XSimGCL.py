@@ -12,6 +12,7 @@ from tqdm import tqdm
 import time
 import os
 from safetensors import safe_open
+from safetensors.torch import load_file
 from typing import Optional
 from dataclasses import dataclass
 
@@ -62,6 +63,7 @@ class XSimGCL(GraphRecommender):
                 embs = model.forward(perturbed=True)
                 rec_user_emb, rec_item_emb = embs.user_embs, embs.item_embs
                 cl_user_emb, cl_item_emb = embs.user_embs_cl, embs.item_embs_cl
+                # 模态 cl 暂未指定
                 image_embs, image_embs_cl = embs.image_embs, embs.image_embs_cl
                 text_embs, text_embs_cl = embs.text_embs, embs.text_embs_cl
                 user_pref_tensor = embs.user_pref_embs
@@ -69,6 +71,8 @@ class XSimGCL(GraphRecommender):
                 # 根据批次数据获取用户的嵌入、正样本嵌入和负样本嵌入
                 #* 这里看似字典形式获取，实则为索引，可参考下文predict()
                 user_emb, pos_item_emb, neg_item_embs = rec_user_emb[user_ids], rec_item_emb[pos_ids], rec_item_emb[neg_ids]
+                if image_embs is not None: pos_image_emb = image_embs[pos_ids]
+                if text_embs is not None: pos_text_emb = text_embs[pos_ids]
 
                 #* 根据 neg_ids 取出对应中心性系数
                 item_id_centrality = self.data.item_id_centrality
@@ -105,13 +109,19 @@ class XSimGCL(GraphRecommender):
                 # text_cl_loss = self.cl_rate * cl_script(pos_ids, text_embs, text_embs_cl, self.temp, self.device) # type: ignore
 
                 # total_cl_loss = ui_cl_loss + image_cl_loss + text_cl_loss
+                
+                if self.data.image_modal and self.data.text_modal:
+                    l2_loss = l2_reg_script(self.reg, [user_emb, pos_item_emb, pos_image_emb, pos_text_emb], self.device) # type: ignore
+                elif self.data.image_modal:
+                    l2_loss = l2_reg_script(self.reg, [user_emb, pos_item_emb, pos_image_emb], self.device) # type: ignore
+                elif self.data.text_modal:
+                    l2_loss = l2_reg_script(self.reg, [user_emb, pos_item_emb, pos_text_emb], self.device) # type: ignore
+                else:
+                    l2_loss = l2_reg_script(self.reg, [user_emb, pos_item_emb], self.device) # type: ignore
 
                 # 计算批次总损失
-                if self.data.image_modal or self.data.text_modal:
-                    batch_loss = rec_loss1 + l2_reg_script(self.reg, [user_emb, pos_item_emb], self.device) + ui_cl_loss # type: ignore
-                else:
-                    batch_loss = rec_loss1 + l2_reg_script(self.reg, [user_emb, pos_item_emb], self.device) + ui_cl_loss # type: ignore
-
+                batch_loss = rec_loss1 + l2_loss + ui_cl_loss # type: ignore
+            
                 # 梯度清零
                 optimizer.zero_grad()
                 # 反向传播
@@ -232,29 +242,33 @@ class XSimGCL_Encoder(nn.Module):
                     torch.save(image_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/image.pth')
             
             # 初始化预训练图像嵌入张量(按照训练集image_id排列)
-            origin_image_tensor = torch.empty(size=(self.data.item_num, 512), device=self.device)
+            origin_image_tensor = torch.empty(size=(self.data.item_num, int(image_modal['dim'])), device=self.device)
 
-            if str(self.data.image_modal['image_set']).endswith('npy'):
-                origin_image_np = np.load(self.data.image_modal['image_set'])
+            if str(image_modal['image_set']).endswith('npy'):
+                origin_image_np = np.load(image_modal['image_set'])
                 origin_image_tensor = torch.from_numpy(origin_image_np).to(self.device, dtype=torch.float32)
             else:
-                item2image: dict[str, list[str]] = {}
-                with safe_open(self.data.image_modal['image_set'], 'pt', device=f"cuda:{self.device.index}") as image_safetensors: # type: ignore
-                    with open(self.data.image_modal['item2image'], 'r') as map_file:
-                        for line in map_file:
-                            item = line.strip().split(' ')[0]
-                            images = line.strip().split(' ')[1:]
-                            item2image[item] = images
-                    for idx, item in tqdm(enumerate(self.data.item), desc='item images'):
-                        try:
-                            origin_image_tensor[idx] = torch.mean(
-                                torch.stack([image_safetensors.get_tensor(image) for image in item2image[item]]), dim=0
-                            )
-                        except Exception as e:
-                            Log.catch(e, item, 'item2photo emb project')
-                            exit(-1)
-                self.param_dict['image_embs_tensor'] = image_projection(origin_image_tensor)
-                self.image_modal_flag = True
+                # item2image: dict[str, list[str]] = {}
+                # with safe_open(self.data.image_modal['image_set'], 'pt', device=f"cuda:{self.device.index}") as image_safetensors: # type: ignore
+                #     with open(self.data.image_modal['item2image'], 'r') as map_file:
+                #         for line in map_file:
+                #             item = line.strip().split(' ')[0]
+                #             images = line.strip().split(' ')[1:]
+                #             item2image[item] = images
+                #     for idx, item in tqdm(enumerate(self.data.item), desc='item images'):
+                #         try:
+                #             origin_image_tensor[idx] = torch.mean(
+                #                 torch.stack([image_safetensors.get_tensor(image) for image in item2image[item]]), dim=0
+                #             )
+                #         except Exception as e:
+                #             Log.catch(e, item, 'item2photo emb project')
+                #             exit(-1)
+                #* 只取出训练集需要的数据, 按id(索引)排列
+                with safe_open(image_modal['image_set'], 'pt', device=f"cuda:{self.device.index}") as f: # type: ignore
+                    for idx, item in tqdm(enumerate(self.data.item), desc='item image'):
+                        origin_image_tensor[idx] = f.get_tensor(item)
+            self.param_dict['image_embs_tensor'] = image_projection(origin_image_tensor)
+            self.image_modal_flag = True
 
         if text_modal:
             Log.cli('Model', f'📒 Loading text safetensors to {self.device} and project to {self.emb_size} dimensions')
@@ -275,13 +289,13 @@ class XSimGCL_Encoder(nn.Module):
                     torch.save(item_text_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/item_text.pth')
 
             # 初始化预训练文本嵌入张量(按照训练集item_id排列)
-            origin_text_tensor = torch.empty(size=(self.data.item_num, 1024), device=self.device)
+            origin_text_tensor = torch.empty(size=(self.data.item_num, int(text_modal['dim'])), device=self.device)
 
-            if str(self.data.text_modal['item_text']).endswith('npy'):
-                origin_text_np = np.load(self.data.text_modal['item_text'])
+            if str(text_modal['item_text']).endswith('npy'):
+                origin_text_np = np.load(text_modal['item_text'])
                 origin_text_tensor = torch.from_numpy(origin_text_np).to(self.device, dtype=torch.float32)
             else:
-                with safe_open(self.data.text_modal['item_text'], 'pt', device=f"cuda:{self.device.index}") as f1: # type: ignore
+                with safe_open(text_modal['item_text'], 'pt', device=f"cuda:{self.device.index}") as f1: # type: ignore
                     for idx, item in tqdm(enumerate(self.data.item), desc='item text'):
                         origin_text_tensor[idx] = f1.get_tensor(item)
             
@@ -290,13 +304,13 @@ class XSimGCL_Encoder(nn.Module):
         
         if user_pref:
             Log.cli('Model', f'📒 Loading pref safetensors to {self.device} and project to {self.emb_size} dimensions')
-            user_pref_projection = nn.Linear(1024, self.emb_size, device=self.device)
+            user_pref_projection = nn.Linear(int(user_pref['dim']), self.emb_size, device=self.device)
             if user_pref['pre_trained']['enable']:
                 try:
                     user_pref_pth = user_pref['pre_trained']['user_pref_pth']
                     user_pref_projection.load_state_dict(torch.load(user_pref_pth))
                 except Exception as e:
-                    Log.catch(e, 'text_modal', '_init_multi_modal')
+                    Log.catch(e, 'user_pref', '_init_multi_modal')
                     exit(-1) 
             else:
                 if user_pref['pre_trained']['save']:
@@ -304,7 +318,7 @@ class XSimGCL_Encoder(nn.Module):
                     os.makedirs(f"{path}/{self.model_name}_{self.timestamp}", exist_ok=True)
                     torch.save(user_pref_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/user_pref.pth')
             
-            origin_pref_tensor = torch.empty(size=(self.data.user_num, 1024), device=self.device)
+            origin_pref_tensor = torch.empty(size=(self.data.user_num, int(user_pref['dim'])), device=self.device)
             with safe_open(self.data.user_pref['pref_embs'], 'pt', device=f"cuda:{self.device.index}") as f2: # type: ignore
                 for idx, user in tqdm(enumerate(self.data.user), desc='user pref'):
                     origin_pref_tensor[idx] = f2.get_tensor(user)
@@ -327,22 +341,14 @@ class XSimGCL_Encoder(nn.Module):
         #* 为解耦多模态实现, 暂考虑复用逻辑
         final_image_embeddings, final_text_embeddings = None, None
         
-        # user_all_embeddings, item_all_embeddings, user_all_embeddings_cl, item_all_embeddings_cl, user_pref_tensor
-        embs = Emb(
-            user_embs = self.param_dict['user_emb'],
-            item_embs = self.param_dict['item_emb']
-        )
-        assert embs.user_embs is not None
-        assert embs.item_embs is not None
+        # 初始化返回值
+        embs = Emb()
         
         if hasattr(self, 'user_pref_tensor'):
             embs.user_pref_embs = self.user_pref_tensor.detach()
 
         if self.image_modal_flag:
-            embs.image_embs = self.param_dict['image_embs_tensor']
-            assert embs.image_embs is not None
-            image_side_embs = torch.cat([embs.user_embs, embs.image_embs], 0)
-
+            image_side_embs = torch.cat([self.param_dict['user_emb'], self.param_dict['image_embs_tensor']], 0)
             all_image_embeddings = []
             for k in range(self.n_layer):  #* 图像模态传播
                 image_side_embs = torch.sparse.mm(self.sparse_norm_adj, image_side_embs)
@@ -360,10 +366,7 @@ class XSimGCL_Encoder(nn.Module):
             final_image_embeddings = F.normalize(final_image_embeddings, p=2)
         
         if self.text_modal_flag:
-            embs.text_embs = self.param_dict['item_text_tensor']
-            assert embs.text_embs is not None
-            text_side_embs = torch.cat([embs.user_embs, embs.text_embs], 0)
-
+            text_side_embs = torch.cat([self.param_dict['user_emb'], self.param_dict['item_text_tensor']], 0)
             all_text_embeddings = []
             for k in range(self.n_layer):  #* 文本模态传播
                 text_side_embs = torch.sparse.mm(self.sparse_norm_adj, text_side_embs)
@@ -382,23 +385,23 @@ class XSimGCL_Encoder(nn.Module):
         
         #* 模态融合v6: 先处理多模态, 然后融合, 最后加噪对比
         if final_image_embeddings is not None and final_text_embeddings is not None:  #* 两种模态
-            image_side_user, image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
-            text_side_user, text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
-            fusion_user_embeddings = torch.mean(torch.stack([embs.user_embs, image_side_user, text_side_user], dim=0), dim=0)
-            fusion_item_embeddings = torch.mean(torch.stack([embs.item_embs, image_embs, text_embs], dim=0), dim=0)
+            image_side_user, embs.image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
+            text_side_user, embs.text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
+            fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], image_side_user, text_side_user], dim=0), dim=0)
+            fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.image_embs, embs.text_embs], dim=0), dim=0)
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
         elif final_image_embeddings is not None:  #* 图片模态
-            image_side_user, image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
-            fusion_user_embeddings = torch.mean(torch.stack([embs.user_embs, image_side_user], dim=0), dim=0)
-            fusion_item_embeddings = torch.mean(torch.stack([embs.item_embs, image_embs], dim=0), dim=0)
+            image_side_user, embs.image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
+            fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], image_side_user], dim=0), dim=0)
+            fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.image_embs], dim=0), dim=0)
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
         elif final_text_embeddings is not None:  #* 文本模态
-            text_side_user, text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
-            fusion_user_embeddings = torch.mean(torch.stack([embs.user_embs, text_side_user], dim=0), dim=0)
-            fusion_item_embeddings = torch.mean(torch.stack([embs.item_embs, text_embs], dim=0), dim=0)
+            text_side_user, embs.text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
+            fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], text_side_user], dim=0), dim=0)
+            fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.text_embs], dim=0), dim=0)
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
         else:
-            joint_embeddings = torch.cat([embs.user_embs, embs.item_embs], 0)
+            joint_embeddings = torch.cat([self.param_dict['user_emb'], self.param_dict['item_emb']], 0)
         
         # 初始化一个列表，用于存储每一层的嵌入向量
         all_embeddings = []
