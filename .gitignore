@@ -4,9 +4,11 @@ log/
 model/clip-vit-base-patch32
 model/stella_en_1.5B_v5
 
+dataset/sports
+
 mk_dataset/yelp_*/
-mk_dataset/tiktok_*/
-mk_dataset/netflix_*/
+mk_dataset/tiktok*/
+mk_dataset/netflix*/
 mk_dataset/ifashion_*/
 mk_dataset/RAG/
 mk_dataset/log/
