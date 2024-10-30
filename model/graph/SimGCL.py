@@ -41,6 +41,10 @@ class SimGCL(GraphRecommender):
             with torch.no_grad():
                 self.user_emb, self.item_emb = self.model()
             self.fast_evaluation(epoch)
+
+            if self.early_stop == 10:
+                break  # 连续5次性能未提升, 结束训练s
+            
         self.user_emb, self.item_emb = self.best_user_emb, self.best_item_emb
 
     def cal_cl_loss(self, idx):
