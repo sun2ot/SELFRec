@@ -26,7 +26,7 @@ def bpr_loss(user_emb, pos_item_emb, neg_item_embs):
     return torch.mean(loss)
 
 
-def bpr_loss_w(user_emb, pos_item_emb, neg_item_embs):
+def bpr_loss_w(user_emb: torch.Tensor, pos_item_emb: torch.Tensor, neg_item_embs: torch.Tensor):
     """
     Bayesian Personalized Ranking (BPR) 损失函数
     fix:
@@ -76,6 +76,7 @@ def l2_reg_loss(reg: float, embeddings: list[torch.Tensor], device: torch.device
         # 计算每一个嵌入向量的L2范数，然后除以batch_size以减少其对损失函数的影响
         # 累加到总的嵌入损失中
         emb_loss += torch.linalg.vector_norm(emb, ord=2) / emb.shape[0]
+        emb_loss += 1./2*torch.sum(emb**2) / emb.shape[0]
     return emb_loss * reg
 
 
@@ -89,7 +90,7 @@ def batch_softmax_loss(user_emb, item_emb, temperature):
     return torch.mean(loss)
 
 
-def InfoNCE(view1, view2, temperature: float, b_cos: bool = True):
+def InfoNCE(view1: torch.Tensor, view2: torch.Tensor, temperature: float, b_cos: bool = True):
     """
     计算InfoNCE损失函数
 
@@ -129,6 +130,12 @@ def cl_loss(idx: list[int], view1, view2, temp: float, device: torch.device) -> 
     idx_tensor = torch.unique(torch.tensor(idx, dtype=torch.long, device=device))
     loss = InfoNCE(view1[idx_tensor], view2[idx_tensor], temp)
     return loss
+
+def cross_cl_loss(idx, view1, view2, view3, temp, device):
+    idx_tensor = torch.unique(torch.tensor(idx, dtype=torch.long, device=device))
+    loss1 = InfoNCE(view1[idx_tensor], view2[idx_tensor], temp)
+    loss2 = InfoNCE(view1[idx_tensor], view3[idx_tensor], temp)
+    return loss1 + loss2
 
 
 #this version is from recbole
