@@ -30,5 +30,10 @@ pip install -r requirements.txt
 
 The `env.full.yml` is exported by `mamba env export`. Do not use this to build the environment, for reference only!
 
+## Pre-trained models
+
+- Vision: [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32)
+- Text: [bennegeek/stella_en_1.5B_v5](https://huggingface.co/bennegeek/stella_en_1.5B_v5)
+
 > [!warning]
 > Use [bennegeek/stella_en_1.5B_v5](https://huggingface.co/bennegeek/stella_en_1.5B_v5) to generate text embeddings requires `flash-attn` which needs a CUDA version of at least 11.6, as indicated by `nvcc -V`.
