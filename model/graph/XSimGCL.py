@@ -13,7 +13,7 @@ import time
 import os
 from safetensors import safe_open
 from safetensors.torch import load_file
-from typing import Optional
+from typing import Optional, Literal
 from dataclasses import dataclass
 
 #todo 测试 torch.jit 的加速效果
@@ -205,7 +205,7 @@ class XSimGCL_Encoder(nn.Module):
         self.cl_layer = model_config['cl_layer']
 
         self.norm_adj = self.data.norm_adj
-        self.param_dict, self.attn_dict = self._init_model()
+        self.param_dict = self._init_model()
         self.image_modal_flag, self.text_modal_flag = False, False
         self._init_multi_modal()
         self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj, device=self.device)
@@ -224,15 +224,15 @@ class XSimGCL_Encoder(nn.Module):
             'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.emb_size, device=self.device))),
             'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.emb_size, device=self.device))),
             
-        })
-        
-        attn_dict = nn.ParameterDict({
-            'w_q': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
-            'w_k': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
-            'w_v': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
-        })
+            'u_w_q': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
+            'u_w_k': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
+            'u_w_v': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
 
-        return param_dict, attn_dict
+            'i_w_q': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
+            'i_w_k': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
+            'i_w_v': nn.Parameter(initializer(torch.empty([self.emb_size, self.emb_size], device=self.device))),
+        })
+        return param_dict
 
 
     def _init_multi_modal(self):
@@ -329,33 +329,34 @@ class XSimGCL_Encoder(nn.Module):
             #! 这玩意不需要模型优化
             self.user_pref_tensor: torch.Tensor = user_pref_projection(origin_pref_tensor)
 
-    def SelfAttention(self, trans_w, emb_1: torch.Tensor, emb_2: torch.Tensor, emb_3: torch.Tensor):  
-
+    def SelfAttention(self, trans_w, emb_1: torch.Tensor, emb_2: torch.Tensor, emb_3: torch.Tensor, mode: Literal['u','i']):  
         # 两个模态，两套参数
         q = emb_1.unsqueeze(1)  # (user_num, 1, dim)
-        v1 = k1 = emb_2.unsqueeze(1)  # (user_num, 1, dim)
-        v2 = k2 = emb_3.unsqueeze(1)
-
-        # 线性变换
-        Q = torch.matmul(q, trans_w['w_q'])  # (user_num, 1, dim)
-        K1 = torch.matmul(k1, trans_w['w_k'])  # (user_num, 1, dim)
-        V1 = torch.matmul(v1, trans_w['w_v'])  # (user_num, 1, dim)
-        K2 = torch.matmul(k2, trans_w['w_k'])
-        V2 = torch.matmul(v2, trans_w['w_v'])
-
+        k = emb_2.unsqueeze(1)  # (user_num, 1, dim)
+        v = emb_3.unsqueeze(1)
+        
+        if mode == 'u':
+            # 用户侧
+            Q = torch.matmul(q, trans_w['u_w_q'])  # (user_num, 1, dim)
+            K = torch.matmul(k, trans_w['u_w_k'])
+            V = torch.matmul(v, trans_w['u_w_v'])
+        elif mode == 'i':
+            # 项目侧
+            Q = torch.matmul(q, trans_w['i_w_q'])  # (user_num, 1, dim)
+            K = torch.matmul(k, trans_w['i_w_k'])
+            V = torch.matmul(v, trans_w['i_w_v'])
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
+        
         # 计算注意力分数
-        scores1 = torch.matmul(Q, K1.transpose(1, 2)) / torch.sqrt(torch.tensor(Q.shape[-1], dtype=torch.float32))  # (user_num, 1, 1)
-        scores2 = torch.matmul(Q, K2.transpose(1, 2)) / torch.sqrt(torch.tensor(Q.shape[-1], dtype=torch.float32))
-        att1 = F.softmax(scores1, dim=-1)  # (user_num, 1, 1)
-        att2 = F.softmax(scores2, dim=-1)
+        scores = torch.matmul(Q, K.transpose(1, 2)) / torch.sqrt(torch.tensor(Q.shape[-1], dtype=torch.float32))  # (user_num, 1, 1)
+        att = F.softmax(scores, dim=-1)  # (user_num, 1, 1)
 
         # 应用注意力权重
-        Z1 = torch.matmul(att1, V1).squeeze(1)  # (user_num, dim)
-        Z2 = torch.matmul(att2, V2).squeeze(1)
-        Z = (Z1 + Z2)/2
+        Z = torch.matmul(att, V).squeeze(1)  # (user_num, dim)
         Z = F.normalize(Z, p=2, dim=-1)
-
         return Z
+
     
     def forward(self, perturbed=False):
         """
@@ -410,10 +411,10 @@ class XSimGCL_Encoder(nn.Module):
             # fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.image_embs, embs.text_embs], dim=0), dim=0)
             
             rate = 0.5
-            attn_user = self.SelfAttention(self.attn_dict, self.param_dict['user_emb'], embs.image_side_user, embs.text_side_user)
+            attn_user = self.SelfAttention(self.param_dict, self.param_dict['user_emb'], embs.image_side_user, embs.text_side_user, mode='u')
             fusion_user_embeddings = self.param_dict['user_emb'] + rate*attn_user
 
-            attn_item = self.SelfAttention(self.attn_dict, self.param_dict['item_emb'], embs.image_embs, embs.text_embs)
+            attn_item = self.SelfAttention(self.param_dict, self.param_dict['item_emb'], embs.image_embs, embs.text_embs, mode='i')
             fusion_item_embeddings = self.param_dict['item_emb'] + rate*attn_item
 
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
