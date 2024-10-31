@@ -3,26 +3,32 @@ import torch.nn as nn
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import bpr_loss,l2_reg_loss
+from util.loss_torch import bpr_loss_w,l2_reg_loss
 # paper: LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation. SIGIR'20
 
 
 class LightGCN(GraphRecommender):
-    def __init__(self, conf, training_set, test_set):
-        super(LightGCN, self).__init__(conf, training_set, test_set)
+    def __init__(self, conf, training_set, test_set, **kwargs):
+        super(LightGCN, self).__init__(conf, training_set, test_set, **kwargs)
         args = self.config['LightGCN']
         self.n_layers = int(args['n_layer'])
-        self.model = LGCN_Encoder(self.data, self.emb_size, self.n_layers)
+        self.device = torch.device(f"cuda:{int(self.config['gpu_id'])}" if torch.cuda.is_available() else "cpu")
 
+    def build(self):
+        self.model = LGCN_Encoder(self.data, self.emb_size, self.n_layers, self.device)
+    
     def train(self):
-        model = self.model.cuda()
+        model = self.model.cuda(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lRate)
         for epoch in range(self.maxEpoch):
-            for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
+            for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size, 1)):
                 user_idx, pos_idx, neg_idx = batch
                 rec_user_emb, rec_item_emb = model()
                 user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
-                batch_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb) + l2_reg_loss(self.reg, model.embedding_dict['user_emb'][user_idx],model.embedding_dict['item_emb'][pos_idx],model.embedding_dict['item_emb'][neg_idx])/self.batch_size
+                batch_loss = bpr_loss_w(user_emb, pos_item_emb, neg_item_emb) + \
+                                l2_reg_loss(self.reg, 
+                                            [model.embedding_dict['user_emb'][user_idx],model.embedding_dict['item_emb'][pos_idx],model.embedding_dict['item_emb'][neg_idx]],
+                                            self.device)/self.batch_size
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -33,8 +39,10 @@ class LightGCN(GraphRecommender):
                 self.user_emb, self.item_emb = model()
             if epoch % 5 == 0:
                 self.fast_evaluation(epoch)
+                if self.early_stop == 10:
+                    break
+            
         self.user_emb, self.item_emb = self.best_user_emb, self.best_item_emb
-
 
 
     def save(self):
@@ -48,20 +56,21 @@ class LightGCN(GraphRecommender):
 
 
 class LGCN_Encoder(nn.Module):
-    def __init__(self, data, emb_size, n_layers):
+    def __init__(self, data, emb_size, n_layers, device):
         super(LGCN_Encoder, self).__init__()
+        self.device = device
         self.data = data
         self.latent_size = emb_size
         self.layers = n_layers
         self.norm_adj = data.norm_adj
         self.embedding_dict = self._init_model()
-        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj).cuda()
+        self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.norm_adj, self.device)
 
     def _init_model(self):
         initializer = nn.init.xavier_uniform_
         embedding_dict = nn.ParameterDict({
-            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.latent_size))),
-            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.latent_size))),
+            'user_emb': nn.Parameter(initializer(torch.empty(self.data.user_num, self.latent_size, device=self.device))),
+            'item_emb': nn.Parameter(initializer(torch.empty(self.data.item_num, self.latent_size, device=self.device))),
         })
         return embedding_dict
 
