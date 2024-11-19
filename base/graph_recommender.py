@@ -113,11 +113,12 @@ class GraphRecommender(Recommender):
             self.recOutput.append(line)
         current_time = strftime("%Y-%m-%d %H-%M-%S", localtime(time()))
         out_dir = self.output
-        file_name = f"{self.config['model']['name']}@{current_time}-top-{self.max_N}items.txt"
-        FileIO.write_file(out_dir, file_name, self.recOutput)
-        print('The result has been output to ', abspath(out_dir), '.')
+        top_items_file = f"{self.config['model']['name']}@{current_time}-top-{self.max_N}items.txt"
+        FileIO.write_file(out_dir, top_items_file, self.recOutput)
+        print(f"Top {self.max_N} items have been output to \"{abspath(out_dir)}/{top_items_file}\"")
+
         # 输出评估指标到文件
-        file_name = f"{self.config['model']['name']}@{current_time}-performance.txt"
+        performance_file = f"{self.config['model']['name']}@{current_time}-performance.txt"
         self.result = ranking_evaluation(self.data.test_set, rec_list, self.topN)
         # 日志输出评估指标
         self.model_log.add('###Evaluation Results###')
@@ -125,13 +126,15 @@ class GraphRecommender(Recommender):
         for r in self.result:
             result_format_str += r
         self.model_log.add(result_format_str)
-        FileIO.write_file(out_dir, file_name, self.result)
+        FileIO.write_file(out_dir, performance_file, self.result)
+        print(f"Performance result has been output to \"{abspath(out_dir)}/{performance_file}\"")
+
         end_time = time()
         train_time = end_time - self.start_time
         # CLI 输出评估指标
         print(f"\nThe result of {self.model_name}:\n{''.join(self.result)}\nRun time: {train_time:.2f}s")
         self.model_log.add(f"Run time: {train_time:.2f}s")
-        bot.send_text(f'[whr] The result of {self.model_name}:\n{"".join(self.result)}\nRun time: {train_time:.2f}s')
+        # bot.send_text(f'[whr] The result of {self.model_name}:\n{"".join(self.result)}\nRun time: {train_time:.2f}s')
 
     def fast_evaluation(self, epoch):
         """

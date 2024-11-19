@@ -5,7 +5,7 @@ import numpy as np
 from base.graph_recommender import GraphRecommender
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import l2_reg_loss, bpr_loss_w, cl_loss, cross_cl_loss
+from util.loss_torch import l2_reg_loss, bpr_loss_w, cl_loss, cross_cl_loss, InfoNCE
 from util.logger import Log
 from data.ui_graph import Interaction
 from tqdm import tqdm
@@ -88,8 +88,8 @@ class XSimGCL(GraphRecommender):
                     neg_item_centralities.append([item_id_centrality[id] for id in neg_id])
                 # 负样本权重 (batch_size, 2*n_negs)
                 neg_weights = torch.tensor(neg_item_centralities, dtype=torch.float, device=self.device)
-                norm_neg_weights = F.normalize(neg_weights, p=2, dim=1)
-                weight_neg_item_embs: torch.Tensor = norm_neg_weights.unsqueeze(-1) * neg_item_embs  # [batch_size, 2*n_negs, dim]
+                # norm_neg_weights = F.normalize(neg_weights, p=2, dim=1)
+                weight_neg_item_embs: torch.Tensor = neg_weights.unsqueeze(-1) * neg_item_embs  # [batch_size, 2*n_negs, dim]
 
                 # 用户偏好引导负样本采样
                 if user_pref_tensor is not None:
@@ -118,8 +118,6 @@ class XSimGCL(GraphRecommender):
                 #     u_loss = self.cl_rate*cl_loss(user_ids, rec_user_emb+image_side_user, rec_user_emb+text_side_user, self.temp, self.device)
                 #     i_loss = self.cl_rate*cl_loss(pos_ids, rec_item_emb+image_embs, rec_item_emb+text_embs, self.temp, self.device)
                 #     ccl_loss = u_loss + i_loss
-                # image_cl_loss = self.cl_rate * cl_script(pos_ids, image_embs, image_embs_cl, self.temp, self.device) # type: ignore
-                # text_cl_loss = self.cl_rate * cl_script(pos_ids, text_embs, text_embs_cl, self.temp, self.device) # type: ignore
 
                 # total_cl_loss = ui_cl_loss + image_cl_loss + text_cl_loss
                 
@@ -287,7 +285,7 @@ class XSimGCL_Encoder(nn.Module):
                     exit(-1)
             else:
                 if text_modal['pre_trained']['save']:
-                    path = image_modal['pre_trained']['save_path']
+                    path = text_modal['pre_trained']['save_path']
                     os.makedirs(f"{path}/{self.model_name}_{self.timestamp}", exist_ok=True)
                     torch.save(item_text_projection.state_dict(), f'{path}/{self.model_name}_{self.timestamp}/item_text.pth')
 
@@ -330,7 +328,6 @@ class XSimGCL_Encoder(nn.Module):
             self.user_pref_tensor: torch.Tensor = user_pref_projection(origin_pref_tensor)
 
     def SelfAttention(self, trans_w, emb_1: torch.Tensor, emb_2: torch.Tensor, emb_3: torch.Tensor, mode: Literal['u','i']):  
-        # 两个模态，两套参数
         q = emb_1.unsqueeze(1)  # (user_num, 1, dim)
         k = emb_2.unsqueeze(1)  # (user_num, 1, dim)
         v = emb_3.unsqueeze(1)
@@ -405,10 +402,9 @@ class XSimGCL_Encoder(nn.Module):
         
         #* 模态融合v6: 先处理多模态, 然后融合, 最后加噪对比
         if final_image_embeddings is not None and final_text_embeddings is not None:  #* 两种模态
+            #* 原型
             embs.image_side_user, embs.image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
             embs.text_side_user, embs.text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
-            # fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], image_side_user, text_side_user], dim=0), dim=0)
-            # fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.image_embs, embs.text_embs], dim=0), dim=0)
             
             rate = 0.5
             attn_user = self.SelfAttention(self.param_dict, self.param_dict['user_emb'], embs.image_side_user, embs.text_side_user, mode='u')
@@ -419,18 +415,39 @@ class XSimGCL_Encoder(nn.Module):
 
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
 
-        elif final_image_embeddings is not None:  #* 图片模态
-            image_side_user, embs.image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
-            fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], image_side_user], dim=0), dim=0)
-            fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.image_embs], dim=0), dim=0)
+            #* 消融1: 去除自注意力融合 -> 均值
+            # embs.image_side_user, embs.image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
+            # embs.text_side_user, embs.text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
+            # fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], embs.image_side_user], dim=0), dim=0)
+            # fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.text_embs], dim=0), dim=0)
+            # joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
+
+        #* 消融2: 仅使用图片模态
+        elif final_image_embeddings is not None:
+            # print('Using Image Modal Only')
+            embs.image_side_user, embs.image_embs = torch.split(final_image_embeddings, [self.data.user_num, self.data.item_num])
+            rate = 0.5
+            attn_user = self.SelfAttention(self.param_dict, self.param_dict['user_emb'], embs.image_side_user, embs.image_side_user, mode='u')
+            fusion_user_embeddings = self.param_dict['user_emb'] + rate*attn_user
+            attn_item = self.SelfAttention(self.param_dict, self.param_dict['item_emb'], embs.image_embs, embs.image_embs, mode='i')
+            fusion_item_embeddings = self.param_dict['item_emb'] + rate*attn_item
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
 
-        elif final_text_embeddings is not None:  #* 文本模态
-            text_side_user, embs.text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
-            fusion_user_embeddings = torch.mean(torch.stack([self.param_dict['user_emb'], text_side_user], dim=0), dim=0)
-            fusion_item_embeddings = torch.mean(torch.stack([self.param_dict['item_emb'], embs.text_embs], dim=0), dim=0)
+
+        #* 消融3: 仅使用文本模态
+        elif final_text_embeddings is not None:  
+            # print('Using Test Modal Only')
+            embs.text_side_user, embs.text_embs = torch.split(final_text_embeddings, [self.data.user_num, self.data.item_num])
+            rate = 0.5
+            attn_user = self.SelfAttention(self.param_dict, self.param_dict['user_emb'], embs.text_side_user, embs.text_side_user, mode='u')
+            fusion_user_embeddings = self.param_dict['user_emb'] + rate*attn_user
+            attn_item = self.SelfAttention(self.param_dict, self.param_dict['item_emb'], embs.text_embs, embs.text_embs, mode='i')
+            fusion_item_embeddings = self.param_dict['item_emb'] + rate*attn_item
             joint_embeddings = torch.cat([fusion_user_embeddings, fusion_item_embeddings], dim=0)
+
+        #* 消融4: 去除多模态(均值融合, 无注意力)
         else:
+            # print('No multi-modal')
             joint_embeddings = torch.cat([self.param_dict['user_emb'], self.param_dict['item_emb']], 0)
         
         # 初始化一个列表，用于存储每一层的嵌入向量
@@ -441,6 +458,7 @@ class XSimGCL_Encoder(nn.Module):
         for k in range(self.n_layer):
             # 信息传播: 邻接矩阵 x 嵌入向量 -> torch.Size([node_num, node_num]) x torch.Size([node_num, dim])
             joint_embeddings = torch.sparse.mm(self.sparse_norm_adj, joint_embeddings)
+            #* 消融5: 无噪声
             if perturbed:
                 # 为嵌入向量添加扰动
                 # Returns a tensor with the same size as input 
