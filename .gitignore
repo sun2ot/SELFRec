@@ -17,3 +17,5 @@ mk_dataset/log/
 pth/
 
 .env
+*.npz
+*.npy
