@@ -37,10 +37,6 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
         self.image_modal = kwargs.get('image_modal', None)
 
         #* 负样本权重
-        # 1. 计算batch item的总交互数N和当前item在batch data中的交互数d，
-        #   1.1 用d/N*n_negs(防止除0之类的操作)作为该用户的中心度/系数
-        #   1.2 对每个用户，用上面那个值除总和作为系数
-        # 2. 把这个值乘到neg_scores上？
         self.item_id_centrality = self.__cal_node_centrality(self.training_data)
 
         #* 文本模态数据
@@ -156,10 +152,14 @@ class Interaction(Data, Graph):  #todo Rename to ModelData or ...
             item_count[item] = item_count.get(item, 0) + 1
         # 总交互数
         data_size = len(training_data)
+
+        d_max = max(item_count.values())
+        d_min = min(item_count.values())
+
         # 计算中心性
         item_centrality: dict[str, float] = {}
         for item, count in item_count.items():
-            item_centrality[item] = float(count / data_size)
+            item_centrality[item] = float((count - d_min) / (d_max - d_min))
         # 将item映射到item_id
         item_id_centrality = {self.item[k]: v for k, v in item_centrality.items()}
         return item_id_centrality
