@@ -19,6 +19,7 @@ class Recommender:
         self.lRate = float(self.config['learning.rate'])
         self.reg = float(self.config['reg.lambda'])
         self.output = self.config['output']
+        self.is_persist = self.config['persist']
 
         # Use f-string for better readability
         self.timestamp = kwargs.get('timestamp')
@@ -72,6 +73,9 @@ class Recommender:
     def evaluate(self, rec_list):
         raise NotImplementedError
 
+    def persist(self):
+        raise NotImplementedError
+
     def execute(self):
         self.initializing_log()
         self.print_model_info()
@@ -89,3 +93,6 @@ class Recommender:
         print('=' * 80)
         print('Evaluating...')
         self.evaluate(rec_list)
+
+        if self.is_persist:
+            self.persist()

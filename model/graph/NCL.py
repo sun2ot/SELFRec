@@ -6,6 +6,7 @@ from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
 from util.loss_torch import bpr_loss_w, l2_reg_loss, InfoNCE
 import faiss
+import numpy as np
 # paper: Improving Graph Collaborative Filtering with Neighborhood-enriched Contrastive Learning. WWW'22
 
 
@@ -132,6 +133,11 @@ class NCL(GraphRecommender):
         u = self.data.get_user_id(u)
         score = torch.matmul(self.user_emb[u], self.item_emb.transpose(0, 1))
         return score.cpu().numpy()
+
+    def persist(self):
+        user_embs = self.best_user_emb.cpu().numpy()
+        item_embs = self.best_item_emb.cpu().numpy()
+        np.savez_compressed('NCL.npz', user_embs=user_embs, item_embs=item_embs)
 
 
 class LGCN_Encoder(nn.Module):

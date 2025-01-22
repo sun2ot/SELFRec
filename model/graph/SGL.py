@@ -57,6 +57,9 @@ class SGL(GraphRecommender):
         u = self.data.get_user_id(u)
         score = torch.matmul(self.user_emb[u], self.item_emb.transpose(0, 1))
         return score.cpu().numpy()
+    
+    def persist(self):
+        pass
 
 
 class SGL_Encoder(nn.Module):
